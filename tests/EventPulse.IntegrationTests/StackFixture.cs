@@ -138,7 +138,8 @@ public sealed class StackFixture : IAsyncLifetime
 
     public async Task WaitForWorkerCaughtUpAsync(TimeSpan timeout)
     {
-        var group = _worker!.Services.GetRequiredService<IOptions<KafkaOptions>>().Value.GroupId;
+        var options = _worker!.Services.GetRequiredService<IOptions<KafkaOptions>>().Value;
+        string[] groups = [options.GroupId, options.NotificationsGroupId];
         using var admin = Admin();
         var parts = admin.GetMetadata(Topics.Events, TimeSpan.FromSeconds(10)).Topics.Single().Partitions
             .Select(p => new TopicPartition(Topics.Events, p.PartitionId))
@@ -151,19 +152,28 @@ public sealed class StackFixture : IAsyncLifetime
 
             var ends = await admin.ListOffsetsAsync(
                 parts.Select(p => new TopicPartitionOffsetSpec { TopicPartition = p, OffsetSpec = OffsetSpec.Latest() }));
-            var committed = (await admin.ListConsumerGroupOffsetsAsync([new ConsumerGroupTopicPartitions(group, parts)]))
-                .Single().Partitions
-                .ToDictionary(p => p.TopicPartition, p => Math.Max(0, p.Offset.Value));
-            var lag = ends.ResultInfos.Sum(r => r.TopicPartitionOffsetError.Offset.Value - committed[r.TopicPartitionOffsetError.TopicPartition]);
+            var behind = new List<string>();
+            foreach (var group in groups)
+            {
+                // librdkafka accepts only one group per ListConsumerGroupOffsets request.
+                var committed = (await admin.ListConsumerGroupOffsetsAsync([new ConsumerGroupTopicPartitions(group, parts)]))
+                    .Single().Partitions
+                    .ToDictionary(p => p.TopicPartition, p => Math.Max(0, p.Offset.Value));
+                var lag = ends.ResultInfos.Sum(r => r.TopicPartitionOffsetError.Offset.Value - committed[r.TopicPartitionOffsetError.TopicPartition]);
+                if (lag > 0)
+                {
+                    behind.Add($"{group} {lag}");
+                }
+            }
 
-            if (lag == 0)
+            if (behind.Count == 0)
             {
                 return;
             }
 
             if (elapsed.Elapsed > timeout)
             {
-                throw new TimeoutException($"Group {group} still {lag} messages behind after {timeout}");
+                throw new TimeoutException($"Messages behind after {timeout}: {string.Join(", ", behind)}");
             }
 
             await Task.Delay(PollInterval);

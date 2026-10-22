@@ -84,6 +84,30 @@ public sealed class LedgerTests(StackFixture stack) : IClassFixture<StackFixture
             i => Assert.Equal(partitionOf[placed[i].EventId], partitionOf[paid[i].EventId]));
     }
 
+    [Fact]
+    public async Task Duplicate_delivery_writes_one_notification()
+    {
+        var orderId = NewOrderId();
+        var placed = Event(orderId, new OrderPlaced("cus_77", 24900, "DKK"));
+        var paid = Event(orderId, new PaymentCompleted($"pay_{orderId}", 24900));
+
+        await Post(placed);
+        await Post(paid);
+        await Post(placed);
+
+        await stack.WaitForProcessedAsync([placed.EventId, paid.EventId], Timeout);
+        await stack.WaitForWorkerCaughtUpAsync(Timeout);
+
+        // order-notifications has committed past all three messages, so the third was consumed and left no row.
+        Assert.Equal([placed.EventId, paid.EventId, placed.EventId], ReadEventIds(orderId, 3));
+        Assert.Equal(
+            [
+                new NotificationRow(placed.EventId, $"OrderPlaced for {orderId}"),
+                new NotificationRow(paid.EventId, $"PaymentCompleted for {orderId}"),
+            ],
+            await ReadNotifications(orderId));
+    }
+
     private static string NewOrderId() => $"ord_{Guid.NewGuid():N}";
 
     private static EventEnvelope Event<T>(string orderId, T payload) =>
@@ -149,5 +173,51 @@ public sealed class LedgerTests(StackFixture stack) : IClassFixture<StackFixture
         return partitionOf;
     }
 
+    private async Task<List<NotificationRow>> ReadNotifications(string orderId)
+    {
+        await using var db = NpgsqlDataSource.Create(stack.Postgres.GetConnectionString());
+        await using var cmd = db.CreateCommand("select event_id, message from notifications where order_id = @id order by id");
+        cmd.Parameters.AddWithValue("id", orderId);
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        var rows = new List<NotificationRow>();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new NotificationRow(reader.GetGuid(0), reader.GetString(1)));
+        }
+
+        return rows;
+    }
+
+    private List<Guid> ReadEventIds(string orderId, int expected)
+    {
+        using var consumer = new ConsumerBuilder<string, byte[]>(new ConsumerConfig
+        {
+            BootstrapServers = stack.Kafka.GetBootstrapAddress(),
+            GroupId = $"ledger-tests-{Guid.NewGuid()}",
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = false,
+        }).Build();
+        consumer.Subscribe(Topics.Events);
+
+        var eventIds = new List<Guid>();
+        var deadline = DateTime.UtcNow + Timeout;
+        while (eventIds.Count < expected && DateTime.UtcNow < deadline)
+        {
+            var result = consumer.Consume(TimeSpan.FromSeconds(1));
+            if (result is null || result.Message.Key != orderId)
+            {
+                continue;
+            }
+
+            eventIds.Add(JsonSerializer.Deserialize<EventEnvelope>(result.Message.Value, EventJson.Options)!.EventId);
+        }
+
+        consumer.Close();
+        return eventIds;
+    }
+
     private sealed record OrderRow(string OrderId, string Status, int Version);
+
+    private sealed record NotificationRow(Guid EventId, string Message);
 }
