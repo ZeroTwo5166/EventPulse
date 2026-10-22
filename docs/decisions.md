@@ -62,4 +62,5 @@ to Information so a duplicate does not look like an outage.
 - Copy .env.example to .env before docker compose up.
 - Running the Worker with dotnet run needs PGPASSWORD set in the shell; the local connection string has no password.
 - EF's CommandError and SaveChangesFailed events are lowered to Information, so the consumer's own failure handling must log at Error; EF will not.
-
+- seed.sh sends 1,000 requests in about 20 s; once the rate limit exists (100 per 10 s per key), seed and chaos scripts need a separate key per batch or a configurable limit.
+- verify.sh checks once and does not wait for the worker; chaos scripts must wait for consumer lag to reach 0 before calling it.
