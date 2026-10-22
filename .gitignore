@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.swp
+.env
+.env.*
+TestResults/
+
+CLAUDE.md
+.claude/
+.mcp.json
