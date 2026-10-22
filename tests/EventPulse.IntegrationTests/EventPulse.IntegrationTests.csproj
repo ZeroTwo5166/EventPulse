@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\EventPulse.Api\EventPulse.Api.csproj" />
     <ProjectReference Include="..\..\src\EventPulse.Contracts\EventPulse.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\EventPulse.Worker\EventPulse.Worker.csproj" />
   </ItemGroup>
 
   <ItemGroup>
