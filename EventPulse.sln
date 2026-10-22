@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EventPulse.Api", "src\Event
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EventPulse.Worker", "src\EventPulse.Worker\EventPulse.Worker.csproj", "{A8A86B1F-72D5-490E-94E7-F482EE4E184D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EventPulse.IntegrationTests", "tests\EventPulse.IntegrationTests\EventPulse.IntegrationTests.csproj", "{20C12151-0D1B-444E-B604-910B912C0E80}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -73,6 +75,18 @@ Global
 		{A8A86B1F-72D5-490E-94E7-F482EE4E184D}.Release|x64.Build.0 = Release|Any CPU
 		{A8A86B1F-72D5-490E-94E7-F482EE4E184D}.Release|x86.ActiveCfg = Release|Any CPU
 		{A8A86B1F-72D5-490E-94E7-F482EE4E184D}.Release|x86.Build.0 = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|x64.Build.0 = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Debug|x86.Build.0 = Debug|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|Any CPU.Build.0 = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|x64.ActiveCfg = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|x64.Build.0 = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|x86.ActiveCfg = Release|Any CPU
+		{20C12151-0D1B-444E-B604-910B912C0E80}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -82,5 +96,6 @@ Global
 		{1BB4AF0C-9B0B-4AF1-9C6D-189D4D233A6C} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{B01AAF49-E3D6-4571-BFBC-18E2E9B1960B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{A8A86B1F-72D5-490E-94E7-F482EE4E184D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{20C12151-0D1B-444E-B604-910B912C0E80} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal
