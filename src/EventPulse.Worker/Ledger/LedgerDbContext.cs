@@ -6,6 +6,7 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
 {
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -30,6 +31,18 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
             e.Property(p => p.EventId).HasColumnName("event_id").ValueGeneratedNever();
             e.Property(p => p.ConsumerGroup).HasColumnName("consumer_group");
             e.Property(p => p.ProcessedAt).HasColumnName("processed_at").HasColumnType("timestamptz");
+        });
+
+        model.Entity<Notification>(e =>
+        {
+            e.ToTable("notifications");
+            e.HasKey(n => n.Id);
+            e.Property(n => n.Id).HasColumnName("id").UseSerialColumn();
+            e.Property(n => n.EventId).HasColumnName("event_id");
+            e.HasIndex(n => n.EventId).IsUnique();
+            e.Property(n => n.OrderId).HasColumnName("order_id");
+            e.Property(n => n.Message).HasColumnName("message");
+            e.Property(n => n.CreatedAt).HasColumnName("created_at").HasColumnType("timestamptz");
         });
     }
 }

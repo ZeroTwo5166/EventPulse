@@ -16,6 +16,7 @@ builder.Services.AddDbContext<LedgerDbContext>(o => o
         (RelationalEventId.CommandError, LogLevel.Information),
         (CoreEventId.SaveChangesFailed, LogLevel.Information))));
 builder.Services.AddHostedService<OrderLedgerConsumer>();
+builder.Services.AddHostedService<OrderNotificationsConsumer>();
 
 var host = builder.Build();
 
