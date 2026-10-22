@@ -31,6 +31,32 @@ static readonly fields are PascalCase, with an .editorconfig rule that overrides
 the general _camelCase rule for private fields; the three existing fields were
 already written that way.
 
+## 2026-10-22 Offsets are committed after the database transaction
+
+The consumer commits the Postgres transaction first and the Kafka offset
+second. If the worker dies between the two, the message is redelivered and the
+processed_events primary key rejects it as a duplicate. The reverse order
+would lose the event on a crash: offset committed, ledger unchanged, Kafka
+never resends it. At-least-once from Kafka, exactly-once on the ledger.
+
+## 2026-10-22 One message at a time per consumer
+
+Each consumer instance processes a single message to completion before
+consuming the next. Parallelism comes from partitions and from running more
+worker instances, not from concurrent handlers inside one consumer. This keeps
+the offset-commit reasoning simple: the only in-flight message is the one whose
+offset has not been committed yet.
+
+## 2026-10-22 Duplicate detection by unique violation
+
+processed_events is inserted and saved before the ledger change, inside the
+same transaction. A redelivery fails the primary key, the transaction rolls
+back and the offset is committed. The alternative, ON CONFLICT DO NOTHING, is
+quieter but hides the fact that a redelivery happened; the explicit violation is
+logged and counted. EF's own error logging for the two failure events is lowered
+to Information so a duplicate does not look like an outage.
+
+
 ## Notes for the README
 
 - Copy .env.example to .env before docker compose up.
