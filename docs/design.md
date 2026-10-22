@@ -234,7 +234,7 @@ The API publishes to Kafka and returns 202. If the produce call succeeds but the
 
 Every experiment is a shell script in `tests/chaos/` that anyone can rerun, plus a short entry in `docs/failure-tests.md` with the command, what was expected, what happened, and the exact log lines. Numbers come from the script's output, never from memory.
 
-The seed is a `scripts/seed.sh` that POSTs 1,000 events across 200 orders with a known final state (every order ends `Paid` or `Cancelled`). A `scripts/verify.sh` queries Postgres and prints `OK` or the diff. Every chaos run is: seed in the background, inject the failure, wait, verify.
+The seed is a `scripts/seed.sh` that POSTs 1,000 events for 500 orders with a known final state: every order gets `OrderPlaced` followed by `PaymentCompleted` (even-numbered orders, ending `Paid`) or `OrderCancelled` (odd-numbered orders, ending `Cancelled`). A `scripts/verify.sh` queries Postgres and prints `OK` or which check failed. Every chaos run is: seed in the background, inject the failure, wait for consumer lag to reach 0, verify.
 
 | # | Script | Injection | Pass condition |
 | --- | --- | --- | --- |
