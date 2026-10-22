@@ -7,6 +7,7 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<DeadLetter> DeadLetters => Set<DeadLetter>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -43,6 +44,22 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
             e.Property(n => n.OrderId).HasColumnName("order_id");
             e.Property(n => n.Message).HasColumnName("message");
             e.Property(n => n.CreatedAt).HasColumnName("created_at").HasColumnType("timestamptz");
+        });
+
+        model.Entity<DeadLetter>(e =>
+        {
+            e.ToTable("dead_letters");
+            e.HasKey(d => d.Id);
+            e.Property(d => d.Id).HasColumnName("id").UseSerialColumn();
+            e.Property(d => d.EventId).HasColumnName("event_id");
+            e.Property(d => d.EventType).HasColumnName("event_type");
+            e.Property(d => d.OrderId).HasColumnName("order_id");
+            e.Property(d => d.Reason).HasColumnName("reason");
+            e.Property(d => d.Detail).HasColumnName("detail");
+            e.Property(d => d.Attempts).HasColumnName("attempts");
+            e.Property(d => d.RawMessage).HasColumnName("raw_message").HasColumnType("jsonb");
+            e.Property(d => d.FailedAt).HasColumnName("failed_at").HasColumnType("timestamptz");
+            e.Property(d => d.DlqPublishedAt).HasColumnName("dlq_published_at").HasColumnType("timestamptz");
         });
     }
 }

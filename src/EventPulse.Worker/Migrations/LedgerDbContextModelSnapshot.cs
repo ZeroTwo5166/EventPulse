@@ -22,6 +22,59 @@ namespace EventPulse.Worker.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("EventPulse.Worker.Ledger.DeadLetter", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseSerialColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<string>("Detail")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("detail");
+
+                    b.Property<DateTimeOffset?>("DlqPublishedAt")
+                        .HasColumnType("timestamptz")
+                        .HasColumnName("dlq_published_at");
+
+                    b.Property<Guid?>("EventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
+                    b.Property<string>("EventType")
+                        .HasColumnType("text")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTimeOffset>("FailedAt")
+                        .HasColumnType("timestamptz")
+                        .HasColumnName("failed_at");
+
+                    b.Property<string>("OrderId")
+                        .HasColumnType("text")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("RawMessage")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("raw_message");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("dead_letters", (string)null);
+                });
+
             modelBuilder.Entity("EventPulse.Worker.Ledger.Notification", b =>
                 {
                     b.Property<long>("Id")
