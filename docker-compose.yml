@@ -85,6 +85,8 @@ services:
       dockerfile: src/EventPulse.Worker/Dockerfile
     restart: unless-stopped
     stop_grace_period: 30s
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
