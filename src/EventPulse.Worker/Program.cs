@@ -1,8 +1,10 @@
+using Confluent.Kafka;
 using EventPulse.Worker;
 using EventPulse.Worker.Consumers;
 using EventPulse.Worker.Ledger;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Options;
 
 
 
@@ -15,6 +17,19 @@ builder.Services.AddDbContext<LedgerDbContext>(o => o
     .ConfigureWarnings(w => w.Log(
         (RelationalEventId.CommandError, LogLevel.Information),
         (CoreEventId.SaveChangesFailed, LogLevel.Information))));
+builder.Services.AddSingleton(sp =>
+{
+    var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+    var config = new ProducerConfig
+    {
+        BootstrapServers = kafka.BootstrapServers,
+        Acks = kafka.Acks,
+        EnableIdempotence = kafka.EnableIdempotence,
+        MessageSendMaxRetries = kafka.MessageSendMaxRetries,
+    };
+    return new ProducerBuilder<string, byte[]>(config).Build();
+});
+builder.Services.AddSingleton<Counters>();
 builder.Services.AddHostedService<OrderLedgerConsumer>();
 builder.Services.AddHostedService<OrderNotificationsConsumer>();
 

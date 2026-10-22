@@ -1,4 +1,5 @@
-using System.Text.Json;
+using System.Globalization;
+using System.Text;
 using Confluent.Kafka;
 using EventPulse.Contracts;
 using EventPulse.Worker.Ledger;
@@ -11,6 +12,8 @@ namespace EventPulse.Worker.Consumers;
 internal sealed class OrderLedgerConsumer(
     IOptions<KafkaOptions> options,
     IServiceScopeFactory scopes,
+    IProducer<string, byte[]> producer,
+    Counters counters,
     ILogger<OrderLedgerConsumer> logger) : BackgroundService
 {
     private readonly KafkaOptions _options = options.Value;
@@ -66,30 +69,36 @@ internal sealed class OrderLedgerConsumer(
 
     private void Handle(ConsumeResult<string, byte[]> result)
     {
-        EventEnvelope? envelope = null;
+        Incoming? incoming = null;
         try
         {
-            envelope = JsonSerializer.Deserialize<EventEnvelope>(result.Message.Value, EventJson.Options)
-                ?? throw new JsonException("Message body is JSON null");
-            Store(envelope, result);
+            if (!Incoming.TryRead(result.Message.Value, out incoming, out var malformed))
+            {
+                DeadLetter(result, "Malformed", malformed);
+            }
+            else if (Store(incoming, result) is { } conflict)
+            {
+                DeadLetter(result, "Conflict", conflict);
+            }
         }
         catch (Exception ex)
         {
-            // Until retry and dead-lettering exist, any failure stops the worker with the offset uncommitted.
+            // Until retry exists, a transient failure stops the worker with the offset uncommitted.
             logger.LogError(
                 ex,
                 "Failed {EventType} {EventId} for {OrderId} at {Partition}:{Offset}",
-                envelope?.EventType,
-                envelope?.EventId,
-                envelope?.OrderId ?? result.Message.Key,
+                incoming?.Envelope.EventType,
+                incoming?.Envelope.EventId,
+                incoming?.Envelope.OrderId ?? result.Message.Key,
                 result.Partition.Value,
                 result.Offset.Value);
             throw;
         }
     }
 
-    private void Store(EventEnvelope envelope, ConsumeResult<string, byte[]> result)
+    private string? Store(Incoming incoming, ConsumeResult<string, byte[]> result)
     {
+        var envelope = incoming.Envelope;
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LedgerDbContext>();
         using var tx = db.Database.BeginTransaction();
@@ -111,10 +120,16 @@ internal sealed class OrderLedgerConsumer(
         {
             tx.Rollback();
             logger.LogInformation("Duplicate {EventId} for {OrderId}, skipped", envelope.EventId, envelope.OrderId);
-            return;
+            counters.AddDuplicate();
+            return null;
         }
 
-        Apply(db, envelope, now);
+        if (Apply(db, incoming, now) is { } conflict)
+        {
+            tx.Rollback();
+            return conflict;
+        }
+
         db.SaveChanges();
         tx.Commit();
 
@@ -125,14 +140,19 @@ internal sealed class OrderLedgerConsumer(
             envelope.OrderId,
             result.Partition.Value,
             result.Offset.Value);
+        return null;
     }
 
-    private static void Apply(LedgerDbContext db, EventEnvelope e, DateTimeOffset now)
+    private static string? Apply(LedgerDbContext db, Incoming incoming, DateTimeOffset now)
     {
-        if (e.EventType == nameof(OrderPlaced))
+        var e = incoming.Envelope;
+        if (incoming.Payload is OrderPlaced placed)
         {
-            var placed = e.Payload.Deserialize<OrderPlaced>(EventJson.Options)
-                ?? throw new JsonException("OrderPlaced payload is JSON null");
+            if (db.Orders.Find(e.OrderId) is not null)
+            {
+                return "DuplicateOrder";
+            }
+
             db.Orders.Add(new Order
             {
                 OrderId = e.OrderId,
@@ -142,26 +162,106 @@ internal sealed class OrderLedgerConsumer(
                 Status = "Placed",
                 UpdatedAt = now,
             });
-            return;
+            return null;
         }
 
-        var next = e.EventType switch
+        var next = incoming.Payload switch
         {
-            nameof(PaymentCompleted) => "Paid",
-            nameof(OrderCancelled) => "Cancelled",
-            _ => throw new InvalidOperationException($"Unknown event type {e.EventType}"),
+            PaymentCompleted => "Paid",
+            OrderCancelled => "Cancelled",
+            _ => throw new InvalidOperationException($"No ledger effect for {e.EventType}"),
         };
 
-        var order = db.Orders.Find(e.OrderId)
-            ?? throw new InvalidOperationException($"Order {e.OrderId} not found");
+        var order = db.Orders.Find(e.OrderId);
+        if (order is null)
+        {
+            return "OrderNotFound";
+        }
 
         if (order.Status != "Placed")
         {
-            throw new InvalidOperationException($"{e.EventType} cannot move order {e.OrderId} from {order.Status} to {next}");
+            return "InvalidTransition";
         }
 
         order.Status = next;
         order.Version++;
         order.UpdatedAt = now;
+        return null;
+    }
+
+    private void DeadLetter(ConsumeResult<string, byte[]> result, string reason, string detail)
+    {
+        var (raw, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LedgerDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var row = new DeadLetter
+        {
+            EventId = eventId,
+            EventType = eventType,
+            OrderId = orderId ?? (string.IsNullOrWhiteSpace(result.Message.Key) ? null : result.Message.Key),
+            Reason = reason,
+            Detail = detail,
+            Attempts = 1,
+            RawMessage = raw,
+            FailedAt = now,
+        };
+
+        using (var tx = db.Database.BeginTransaction())
+        {
+            // Without a readable eventId there is nothing to deduplicate on, so a redelivery is dead-lettered again.
+            if (eventId is { } id)
+            {
+                db.ProcessedEvents.Add(new ProcessedEvent { EventId = id, ConsumerGroup = _options.GroupId, ProcessedAt = now });
+            }
+
+            db.DeadLetters.Add(row);
+            try
+            {
+                db.SaveChanges();
+            }
+            catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+            {
+                tx.Rollback();
+                logger.LogInformation("Duplicate {EventId} for {OrderId}, skipped", eventId, row.OrderId);
+                counters.AddDuplicate();
+                return;
+            }
+
+            tx.Commit();
+        }
+
+        Publish(result, row);
+        row.DlqPublishedAt = DateTimeOffset.UtcNow;
+        db.SaveChanges();
+
+        logger.LogError(
+            "Dead-lettered {EventType} {EventId} for {OrderId} at {Partition}:{Offset} as {Reason} {Detail}",
+            row.EventType,
+            row.EventId,
+            row.OrderId,
+            result.Partition.Value,
+            result.Offset.Value,
+            reason,
+            detail);
+        counters.AddDeadLettered();
+    }
+
+    private void Publish(ConsumeResult<string, byte[]> result, DeadLetter row)
+    {
+        var headers = new Headers();
+        foreach (var h in result.Message.Headers ?? new Headers())
+        {
+            headers.Add(h.Key, h.GetValueBytes());
+        }
+
+        headers.Add("x-failure-reason", Encoding.UTF8.GetBytes(row.Reason));
+        headers.Add("x-failure-detail", Encoding.UTF8.GetBytes(row.Detail));
+        headers.Add("x-attempts", Encoding.UTF8.GetBytes(row.Attempts.ToString(CultureInfo.InvariantCulture)));
+        headers.Add("x-source-partition", Encoding.UTF8.GetBytes(result.Partition.Value.ToString(CultureInfo.InvariantCulture)));
+        headers.Add("x-source-offset", Encoding.UTF8.GetBytes(result.Offset.Value.ToString(CultureInfo.InvariantCulture)));
+
+        var message = new Message<string, byte[]> { Key = result.Message.Key, Value = result.Message.Value, Headers = headers };
+        producer.ProduceAsync(Topics.DeadLetters, message).GetAwaiter().GetResult();
     }
 }

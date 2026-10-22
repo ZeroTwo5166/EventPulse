@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Confluent.Kafka;
 using EventPulse.Contracts;
 using EventPulse.Worker.Ledger;
@@ -67,8 +66,18 @@ internal sealed class OrderNotificationsConsumer(
         EventEnvelope? envelope = null;
         try
         {
-            envelope = JsonSerializer.Deserialize<EventEnvelope>(result.Message.Value, EventJson.Options)
-                ?? throw new JsonException("Message body is JSON null");
+            if (!Incoming.TryRead(result.Message.Value, out var incoming, out var malformed))
+            {
+                // The order-ledger group records the dead letter; this group only has to get past it.
+                logger.LogWarning(
+                    "Malformed message at {Partition}:{Offset} skipped: {Detail}",
+                    result.Partition.Value,
+                    result.Offset.Value,
+                    malformed);
+                return;
+            }
+
+            envelope = incoming.Envelope;
             Store(envelope, result);
         }
         catch (Exception ex)

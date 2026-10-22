@@ -12,4 +12,7 @@ public sealed class KafkaOptions
     public bool EnableAutoCommit { get; init; }
     public AutoOffsetReset AutoOffsetReset { get; init; }
     public int MaxPollIntervalMs { get; init; }
+    public Acks Acks { get; init; }
+    public bool EnableIdempotence { get; init; }
+    public int MessageSendMaxRetries { get; init; }
 }
