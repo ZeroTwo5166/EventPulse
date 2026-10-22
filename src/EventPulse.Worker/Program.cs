@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection(KafkaOptions.Section));
+builder.Services.Configure<RetryOptions>(builder.Configuration.GetSection(RetryOptions.Section));
 builder.Services.AddDbContext<LedgerDbContext>(o => o
     .UseNpgsql(builder.Configuration.GetConnectionString("Ledger"))
     // A duplicate delivery fails the processed_events insert by design; the consumer logs real failures itself.
@@ -30,6 +31,7 @@ builder.Services.AddSingleton(sp =>
     return new ProducerBuilder<string, byte[]>(config).Build();
 });
 builder.Services.AddSingleton<Counters>();
+builder.Services.AddSingleton<Retry>();
 builder.Services.AddHostedService<OrderLedgerConsumer>();
 builder.Services.AddHostedService<OrderNotificationsConsumer>();
 

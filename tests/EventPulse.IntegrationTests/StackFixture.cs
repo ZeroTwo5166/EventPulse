@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using EventPulse.Contracts;
@@ -28,7 +30,10 @@ public sealed class StackFixture : IAsyncLifetime
         .WithEnvironment("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
         .Build();
 
-    public PostgreSqlContainer Postgres { get; } = new PostgreSqlBuilder("postgres:16").Build();
+    // A random host port would change on docker stop and start, while the Worker keeps the one it was started with.
+    public PostgreSqlContainer Postgres { get; } = new PostgreSqlBuilder("postgres:16")
+        .WithPortBinding(FreePort(), 5432)
+        .Build();
 
     public RedisContainer Redis { get; } = new RedisBuilder("redis:7").Build();
 
@@ -84,10 +89,11 @@ public sealed class StackFixture : IAsyncLifetime
             return;
         }
 
-        var ledger = Postgres.GetConnectionString();
+        var root = WorkerContentRoot();
+        var ledger = LedgerConnectionString(root);
         string[] args =
         [
-            $"--contentRoot={WorkerContentRoot()}",
+            $"--contentRoot={root}",
             $"--ConnectionStrings:Ledger={ledger}",
             $"--Kafka:BootstrapServers={Kafka.GetBootstrapAddress()}",
         ];
@@ -107,6 +113,9 @@ public sealed class StackFixture : IAsyncLifetime
             .ApplicationStarted.Register(() => started.TrySetResult());
         await UnlessWorkerExits(started.Task, "started");
     }
+
+    public T WorkerService<T>()
+        where T : notnull => _worker!.Services.GetRequiredService<T>();
 
     public async Task WaitForProcessedAsync(IEnumerable<Guid> eventIds, TimeSpan timeout)
     {
@@ -200,6 +209,28 @@ public sealed class StackFixture : IAsyncLifetime
         {
             throw new InvalidOperationException("Worker stopped; its log output has the failure", _workerRun.Exception);
         }
+    }
+
+    // Address and credentials come from the container; everything else, such as the timeouts, from the Worker's appsettings.json.
+    private string LedgerConnectionString(string root)
+    {
+        var settings = new ConfigurationBuilder().SetBasePath(root).AddJsonFile("appsettings.json").Build();
+        var container = new NpgsqlConnectionStringBuilder(Postgres.GetConnectionString());
+        return new NpgsqlConnectionStringBuilder(settings.GetConnectionString("Ledger"))
+        {
+            Host = container.Host,
+            Port = container.Port,
+            Database = container.Database,
+            Username = container.Username,
+            Password = container.Password,
+        }.ConnectionString;
+    }
+
+    private static int FreePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     // The API's appsettings.json is also copied into the test output, so read the Worker's from its project directory.

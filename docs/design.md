@@ -161,8 +161,8 @@ The consumer loop is the heart of the project. Every decision below is one an in
 2. Deserialize the envelope. Failure → `dead_letters` with reason `Malformed`, publish to DLQ, commit offset. No retry: the bytes will not change.
 3. Open a Postgres transaction. Insert into `processed_events`. Unique violation → rollback, log `duplicate`, commit offset, next message.
 4. Apply the ledger change. Conflict → rollback, write `dead_letters` with reason `Conflict` in a fresh transaction, publish to DLQ, commit offset.
-5. Transient error (Postgres unreachable, timeout) → rollback, wait `baseDelay * 2^attempt` (0.5 s, 1 s, 2 s, 4 s, 8 s), retry **the same message in place**, up to 5 attempts. The consumer does not advance.
-6. Retries exhausted → `dead_letters` with reason `RetriesExhausted`, publish to DLQ, commit offset.
+5. Transient error (Postgres unreachable, timeout) → rollback, wait, retry **the same message in place**. That is one attempt plus five retries, 6 attempts in all, with waits of 0.5 s, 1 s, 2 s, 4 s and 8 s between them (`baseDelay * 2^(retry - 1)`, `baseDelay` = 0.5 s). The consumer does not advance and the offset stays uncommitted. Each attempt is bounded by a 2 s connection timeout and a 2 s command timeout, set in the shared connection string, so an unreachable or paused Postgres fails an attempt in about 2 s instead of hanging on Npgsql's defaults (15 s and 30 s). The timeouts apply to both consumers.
+6. Retries exhausted → `dead_letters` with reason `RetriesExhausted`, as detail the type and message of the innermost Npgsql exception followed by those of its root cause (`Npgsql.NpgsqlException: Failed to connect to … ---> System.TimeoutException: …`), `attempts` = 6 and `x-attempts: 6`; publish to DLQ, commit offset.
 7. Success → commit transaction, then commit offset.
 
 **Why offsets are committed after the database commit, not before**
@@ -171,7 +171,7 @@ If the Worker dies between step 7's transaction commit and the offset commit, th
 
 **Why retry in place rather than a retry topic**
 
-A retry topic breaks per-order ordering: a retried `OrderPlaced` can land after the `PaymentCompleted` that followed it. Retrying in place blocks the partition for at most ~15 s (sum of the backoff) before dead-lettering, which is acceptable here. Note the trade-off in the README; a retry topic is the right answer when head-of-line blocking costs more than ordering.
+A retry topic breaks per-order ordering: a retried `OrderPlaced` can land after the `PaymentCompleted` that followed it. During a full outage, retrying in place blocks the partition for roughly 28 s before dead-lettering, not 15: 15.5 s of waits (0.5 + 1 + 2 + 4 + 8) plus up to 2 s of timeout for each of the 6 attempts. That is acceptable here. Note the trade-off in the README; a retry topic is the right answer when head-of-line blocking costs more than ordering.
 
 **Graceful shutdown**
 
@@ -184,6 +184,14 @@ One message at a time per consumer instance. Parallelism comes from partitions a
 **Poison message guard**
 
 An exception in the handler that is not classified (bug in your own code) counts as transient and goes through the retry path. After exhaustion it is dead-lettered, so a bug cannot wedge a partition forever.
+
+**When the dead-letter write itself fails**
+
+`dead_letters` lives in Postgres, so the outage that exhausted the retries usually also fails the `RetriesExhausted` write. The write is retried in place every 8 s, bounded by a deadline of 4 minutes counted from when the message was consumed. Past the deadline the Worker logs at Error and stops the host without committing the offset; the message is redelivered on restart, and compose restarts the Worker (`restart: unless-stopped`). Each failed write counts in `dead_letter_write_retries`. The 4-minute bound keeps one message under Kafka's default `max.poll.interval.ms` of 5 minutes, so the consumer is never evicted from the group mid-retry.
+
+**Retries in `order-notifications`**
+
+The notifications consumer uses the same retry schedule through the same shared code, but it has no DLQ. After the schedule it keeps retrying at the 8 s cap under the same 4-minute deadline, then logs at Error and stops the host without committing. It never skips the message.
 
 ## Redis
 
@@ -223,7 +231,7 @@ Write this table into the README on day one as hypotheses. Each row gets a "Veri
 | Worker killed mid-transaction | Transaction rolled back, event redelivered, applied once | Postgres atomicity + redelivery | |
 | Same event POSTed twice | Second is accepted by the API (202) but ledger changes once | Idempotency is in the consumer, not the API | |
 | Kafka broker restarted while Worker is consuming | Worker reconnects, resumes from last committed offset, no loss | Committed offsets are durable in Kafka | |
-| Postgres down for 10 s | Retries with backoff, succeeds when DB returns, no dead letters | 5 attempts span ~15 s | |
+| Postgres down for 10 s | Retries with backoff, succeeds when DB returns, no dead letters | 6 attempts, waits sum to 15.5 s | |
 | Postgres down for 60 s | Events dead-lettered as `RetriesExhausted`; partition continues afterwards | Retries bounded by design | |
 | Redis down | API accepts all traffic, warning logged | Fail open by decision | |
 | Malformed JSON published | Dead-lettered immediately, partition continues | No retry for non-transient | |
@@ -259,7 +267,7 @@ Enough to debug the chaos tests and nothing more.
 
 - Structured logging with the built-in `ILogger` and JSON console output. Every log line from the consumer carries `eventId`, `orderId`, `partition`, `offset`, `attempt`.
 - `GET /health` on the API: returns 200 if the Kafka producer can reach the broker, with a `redis: ok|degraded` field. The Worker exposes the same on an internal port for compose health checks.
-- Four counters, exposed as a plain `GET /metrics` JSON object on the Worker: `processed`, `duplicates`, `retries`, `dead_lettered`. Incremented in memory; reset on restart. That is the dashboard.
+- Five counters, exposed as a plain `GET /metrics` JSON object on the Worker: `processed`, `duplicates`, `retries`, `dead_lettered`, `dead_letter_write_retries`. Incremented in memory; reset on restart. That is the dashboard.
 - Consumer lag is read with the Kafka CLI (`kafka-consumer-groups --describe --group order-ledger`), not built into the app. Put the command in the README.
 
 OpenTelemetry would take a day to wire and a day to make the traces look right. If the core is done by Nov 5 and nothing else is pending, add it; otherwise it goes in "what I would do next".
@@ -357,7 +365,7 @@ Each item is one Claude Code session and one or more commits. Tick it only when 
 **Milestone 3 — Failure handling and Redis (Oct 29–Nov 1)**
 
 - [ ] Classify failures: `Malformed`, `Conflict`, transient. `dead_letters` table and migration.
-- [ ] Retry in place with exponential backoff, 5 attempts, then dead-letter and publish to DLQ with headers.
+- [ ] Retry in place with exponential backoff, 6 attempts (one plus five retries), then dead-letter and publish to DLQ with headers.
 - [ ] Graceful shutdown: finish current message, commit, `Close()`.
 - [ ] Redis rate limit in the API: Lua `INCR`+`EXPIRE`, 100 per 10 s per key, 429 with `Retry-After`. Fail open on Redis error with a warning and a counter.
 - [ ] Integration tests: malformed message dead-lettered; Postgres paused 5 s then recovered with zero dead letters; 101st request gets 429.

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Confluent.Kafka;
@@ -13,7 +14,9 @@ internal sealed class OrderLedgerConsumer(
     IOptions<KafkaOptions> options,
     IServiceScopeFactory scopes,
     IProducer<string, byte[]> producer,
+    Retry retry,
     Counters counters,
+    IHostApplicationLifetime lifetime,
     ILogger<OrderLedgerConsumer> logger) : BackgroundService
 {
     private readonly KafkaOptions _options = options.Value;
@@ -53,7 +56,11 @@ internal sealed class OrderLedgerConsumer(
             while (!stoppingToken.IsCancellationRequested)
             {
                 var result = consumer.Consume(stoppingToken);
-                Handle(result);
+                if (!Handle(result, stoppingToken))
+                {
+                    break;
+                }
+
                 consumer.Commit(result);
             }
         }
@@ -67,33 +74,131 @@ internal sealed class OrderLedgerConsumer(
         }
     }
 
-    private void Handle(ConsumeResult<string, byte[]> result)
+    // False means the offset must stay uncommitted and the loop must stop: shutdown, or the host is being stopped.
+    private bool Handle(ConsumeResult<string, byte[]> result, CancellationToken stoppingToken)
     {
-        Incoming? incoming = null;
-        try
-        {
-            if (!Incoming.TryRead(result.Message.Value, out incoming, out var malformed))
+        var since = Stopwatch.StartNew();
+        var processed = retry.Run(
+            n => Process(result, n),
+            retry.Attempts,
+            retry.Backoff,
+            since,
+            (n, ex, delay) =>
             {
-                DeadLetter(result, "Malformed", malformed);
-            }
-            else if (Store(incoming, result) is { } conflict)
-            {
-                DeadLetter(result, "Conflict", conflict);
-            }
-        }
-        catch (Exception ex)
+                counters.AddRetry();
+                LogRetry(result, "Attempt", n, ex, delay);
+            },
+            stoppingToken);
+
+        if (processed.Result == RetryResult.Done)
         {
-            // Until retry exists, a transient failure stops the worker with the offset uncommitted.
-            logger.LogError(
-                ex,
-                "Failed {EventType} {EventId} for {OrderId} at {Partition}:{Offset}",
-                incoming?.Envelope.EventType,
-                incoming?.Envelope.EventId,
-                incoming?.Envelope.OrderId ?? result.Message.Key,
-                result.Partition.Value,
-                result.Offset.Value);
-            throw;
+            return true;
         }
+
+        if (processed.Result == RetryResult.Stopped)
+        {
+            return false;
+        }
+
+        if (processed.Result == RetryResult.Expired)
+        {
+            return GiveUp(result, processed);
+        }
+
+        var ex = processed.Error!;
+        var (_, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
+        logger.LogError(
+            ex,
+            "Retries exhausted after {Attempts} attempts for {EventType} {EventId} for {OrderId} at {Partition}:{Offset}",
+            processed.Attempts,
+            eventType,
+            eventId,
+            orderId ?? result.Message.Key,
+            result.Partition.Value,
+            result.Offset.Value);
+        var detail = Describe(ex);
+        var written = retry.Run(
+            _ => DeadLetter(result, "RetriesExhausted", detail, processed.Attempts),
+            int.MaxValue,
+            _ => retry.MaxDelay,
+            since,
+            (n, error, delay) =>
+            {
+                counters.AddDeadLetterWriteRetry();
+                LogRetry(result, "Dead-letter write", n, error, delay);
+            },
+            stoppingToken);
+
+        return written.Result switch
+        {
+            RetryResult.Done => true,
+            RetryResult.Stopped => false,
+            _ => GiveUp(result, written),
+        };
+    }
+
+    // EF's wrapper says only "likely a transient failure"; the Npgsql exception names the server, its root cause says why.
+    private static string Describe(Exception ex)
+    {
+        var head = ex;
+        var root = ex;
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is NpgsqlException)
+            {
+                head = e;
+            }
+
+            root = e;
+        }
+
+        var text = $"{head.GetType().FullName}: {head.Message}";
+        return root == head ? text : $"{text} ---> {root.GetType().FullName}: {root.Message}";
+    }
+
+    private void Process(ConsumeResult<string, byte[]> result, int attempt)
+    {
+        if (!Incoming.TryRead(result.Message.Value, out var incoming, out var malformed))
+        {
+            DeadLetter(result, "Malformed", malformed, attempt);
+        }
+        else if (Store(incoming, result) is { } conflict)
+        {
+            DeadLetter(result, "Conflict", conflict, attempt);
+        }
+    }
+
+    // Committing here would lose the event, so the host stops and the message is redelivered on restart.
+    private bool GiveUp(ConsumeResult<string, byte[]> result, Outcome outcome)
+    {
+        var (_, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
+        logger.LogError(
+            outcome.Error,
+            "Deadline passed after {Attempts} attempts for {EventType} {EventId} for {OrderId} at {Partition}:{Offset}, stopping without committing",
+            outcome.Attempts,
+            eventType,
+            eventId,
+            orderId ?? result.Message.Key,
+            result.Partition.Value,
+            result.Offset.Value);
+        lifetime.StopApplication();
+        return false;
+    }
+
+    private void LogRetry(ConsumeResult<string, byte[]> result, string what, int attempt, Exception ex, TimeSpan delay)
+    {
+        var (_, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
+        logger.LogWarning(
+            "{What} {Attempt} failed for {EventType} {EventId} for {OrderId} at {Partition}:{Offset}, retrying in {Delay}: {Error}",
+            what,
+            attempt,
+            eventType,
+            eventId,
+            orderId ?? result.Message.Key,
+            result.Partition.Value,
+            result.Offset.Value,
+            delay,
+            ex.Message);
     }
 
     private string? Store(Incoming incoming, ConsumeResult<string, byte[]> result)
@@ -189,7 +294,7 @@ internal sealed class OrderLedgerConsumer(
         return null;
     }
 
-    private void DeadLetter(ConsumeResult<string, byte[]> result, string reason, string detail)
+    private void DeadLetter(ConsumeResult<string, byte[]> result, string reason, string detail, int attempts)
     {
         var (raw, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
         using var scope = scopes.CreateScope();
@@ -202,7 +307,7 @@ internal sealed class OrderLedgerConsumer(
             OrderId = orderId ?? (string.IsNullOrWhiteSpace(result.Message.Key) ? null : result.Message.Key),
             Reason = reason,
             Detail = detail,
-            Attempts = 1,
+            Attempts = attempts,
             RawMessage = raw,
             FailedAt = now,
         };

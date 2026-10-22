@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Confluent.Kafka;
 using EventPulse.Contracts;
 using EventPulse.Worker.Ledger;
@@ -10,6 +11,8 @@ namespace EventPulse.Worker.Consumers;
 internal sealed class OrderNotificationsConsumer(
     IOptions<KafkaOptions> options,
     IServiceScopeFactory scopes,
+    Retry retry,
+    IHostApplicationLifetime lifetime,
     ILogger<OrderNotificationsConsumer> logger) : BackgroundService
 {
     private readonly KafkaOptions _options = options.Value;
@@ -48,7 +51,11 @@ internal sealed class OrderNotificationsConsumer(
             while (!stoppingToken.IsCancellationRequested)
             {
                 var result = consumer.Consume(stoppingToken);
-                Handle(result);
+                if (!Handle(result, stoppingToken))
+                {
+                    break;
+                }
+
                 consumer.Commit(result);
             }
         }
@@ -61,38 +68,67 @@ internal sealed class OrderNotificationsConsumer(
         }
     }
 
-    private void Handle(ConsumeResult<string, byte[]> result)
+    // There is no dead-letter path here, so past the schedule it keeps retrying at the cap until the deadline.
+    private bool Handle(ConsumeResult<string, byte[]> result, CancellationToken stoppingToken)
     {
-        EventEnvelope? envelope = null;
-        try
-        {
-            if (!Incoming.TryRead(result.Message.Value, out var incoming, out var malformed))
+        var outcome = retry.Run(
+            _ => Process(result),
+            int.MaxValue,
+            retry.Backoff,
+            Stopwatch.StartNew(),
+            (n, ex, delay) =>
             {
-                // The order-ledger group records the dead letter; this group only has to get past it.
+                var (_, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
                 logger.LogWarning(
-                    "Malformed message at {Partition}:{Offset} skipped: {Detail}",
+                    "Attempt {Attempt} failed for {EventType} {EventId} for {OrderId} at {Partition}:{Offset}, retrying in {Delay}: {Error}",
+                    n,
+                    eventType,
+                    eventId,
+                    orderId ?? result.Message.Key,
                     result.Partition.Value,
                     result.Offset.Value,
-                    malformed);
-                return;
-            }
+                    delay,
+                    ex.Message);
+            },
+            stoppingToken);
 
-            envelope = incoming.Envelope;
-            Store(envelope, result);
-        }
-        catch (Exception ex)
+        if (outcome.Result == RetryResult.Done)
         {
-            // EF logs its own failures at Information, so this is the only Error-level record with the offset.
+            return true;
+        }
+
+        if (outcome.Result != RetryResult.Stopped)
+        {
+            var (_, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
             logger.LogError(
-                ex,
-                "Failed {EventType} {EventId} for {OrderId} at {Partition}:{Offset}",
-                envelope?.EventType,
-                envelope?.EventId,
-                envelope?.OrderId ?? result.Message.Key,
+                outcome.Error,
+                "Deadline passed after {Attempts} attempts for {EventType} {EventId} for {OrderId} at {Partition}:{Offset}, stopping without committing",
+                outcome.Attempts,
+                eventType,
+                eventId,
+                orderId ?? result.Message.Key,
                 result.Partition.Value,
                 result.Offset.Value);
-            throw;
+            lifetime.StopApplication();
         }
+
+        return false;
+    }
+
+    private void Process(ConsumeResult<string, byte[]> result)
+    {
+        if (!Incoming.TryRead(result.Message.Value, out var incoming, out var malformed))
+        {
+            // The order-ledger group records the dead letter; this group only has to get past it.
+            logger.LogWarning(
+                "Malformed message at {Partition}:{Offset} skipped: {Detail}",
+                result.Partition.Value,
+                result.Offset.Value,
+                malformed);
+            return;
+        }
+
+        Store(incoming.Envelope, result);
     }
 
     private void Store(EventEnvelope envelope, ConsumeResult<string, byte[]> result)
