@@ -18,7 +18,7 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
             e.Property(o => o.AmountMinor).HasColumnName("amount_minor");
             e.Property(o => o.Currency).HasColumnName("currency").HasColumnType("char(3)");
             e.Property(o => o.Status).HasColumnName("status");
-            e.Property(o => o.Version).HasColumnName("version").HasDefaultValue(1);
+            e.Property(o => o.Version).HasColumnName("version").HasDefaultValue(1).IsConcurrencyToken();
             e.Property(o => o.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamptz");
         });
 

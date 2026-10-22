@@ -35,3 +35,5 @@ already written that way.
 
 - Copy .env.example to .env before docker compose up.
 - Running the Worker with dotnet run needs PGPASSWORD set in the shell; the local connection string has no password.
+- EF's CommandError and SaveChangesFailed events are lowered to Information, so the consumer's own failure handling must log at Error; EF will not.
+
