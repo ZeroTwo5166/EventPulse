@@ -51,17 +51,23 @@ internal sealed class OrderLedgerConsumer(
 
         consumer.Subscribe(Topics.Events);
 
+        var inFlight = 0;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
                 var result = consumer.Consume(stoppingToken);
+                inFlight = 1;
                 if (!Handle(result, stoppingToken))
                 {
                     break;
                 }
 
                 consumer.Commit(result);
+                if (!stoppingToken.IsCancellationRequested)
+                {
+                    inFlight = 0;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -70,8 +76,24 @@ internal sealed class OrderLedgerConsumer(
         }
         finally
         {
+            Close(consumer, inFlight);
+        }
+    }
+
+    // Without Close the group waits out session.timeout.ms before it gives these partitions to another member.
+    private void Close(IConsumer<string, byte[]> consumer, int inFlight)
+    {
+        try
+        {
             consumer.Close();
         }
+        catch (KafkaException ex)
+        {
+            logger.LogWarning(ex, "Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.GroupId, inFlight, false);
+            return;
+        }
+
+        logger.LogInformation("Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.GroupId, inFlight, true);
     }
 
     // False means the offset must stay uncommitted and the loop must stop: shutdown, or the host is being stopped.

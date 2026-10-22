@@ -84,7 +84,8 @@ services:
       context: .
       dockerfile: src/EventPulse.Worker/Dockerfile
     restart: unless-stopped
-    stop_grace_period: 30s
+    # Longer than Host:ShutdownTimeout in the Worker's appsettings.json, so the host gives up before SIGKILL.
+    stop_grace_period: 15s
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     depends_on:

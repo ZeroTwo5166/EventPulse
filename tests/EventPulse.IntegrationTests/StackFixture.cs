@@ -114,6 +114,19 @@ public sealed class StackFixture : IAsyncLifetime
         await UnlessWorkerExits(started.Task, "started");
     }
 
+    // Returns how long StopAsync took. Program.cs disposes the host once it has stopped, so a later StartWorkerAsync builds a fresh one.
+    public async Task<TimeSpan> StopWorkerAsync()
+    {
+        var elapsed = Stopwatch.StartNew();
+        await _worker!.StopAsync();
+        var took = elapsed.Elapsed;
+
+        await _workerRun!.WaitAsync(WorkerStopTimeout);
+        _worker = null;
+        _workerRun = null;
+        return took;
+    }
+
     public T WorkerService<T>()
         where T : notnull => _worker!.Services.GetRequiredService<T>();
 

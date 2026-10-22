@@ -10,6 +10,8 @@ using Microsoft.Extensions.Options;
 
 var builder = Host.CreateApplicationBuilder(args);
 
+// Stopping both consumers at once keeps the shutdown budget at one message plus Close(), not two of each.
+builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host"));
 builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection(KafkaOptions.Section));
 builder.Services.Configure<RetryOptions>(builder.Configuration.GetSection(RetryOptions.Section));
 builder.Services.AddDbContext<LedgerDbContext>(o => o
