@@ -30,3 +30,8 @@ some Windows tooling write CRLF and the CI format check rejects it. Private
 static readonly fields are PascalCase, with an .editorconfig rule that overrides
 the general _camelCase rule for private fields; the three existing fields were
 already written that way.
+
+## Notes for the README
+
+- Copy .env.example to .env before docker compose up.
+- Running the Worker with dotnet run needs PGPASSWORD set in the shell; the local connection string has no password.
