@@ -36,17 +36,19 @@ event_id() {
 
 now=$(TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T' -1)
 
+# Four curl arguments per event. seq is the event's position in the run; each API key
+# carries 50 events, half the API's limit of 100 per 10 s, however fast the seed runs.
 envelope() {
-  local type=$1 code=$2 i=$3 payload=$4 id
+  local seq=$1 type=$2 code=$3 i=$4 payload=$5 id
   event_id "$code" "$i"
-  printf '{"eventId":"%s","eventType":"%s","orderId":"%s_%d","occurredAt":"%s","schemaVersion":1,"payload":%s}\0' \
-    "$id" "$type" "$prefix" "$i" "$now" "$payload"
+  printf -- '-H\0X-Api-Key: seed-%d\0--data-raw\0{"eventId":"%s","eventType":"%s","orderId":"%s_%d","occurredAt":"%s","schemaVersion":1,"payload":%s}\0' \
+    $((seq / 50)) "$id" "$type" "$prefix" "$i" "$now" "$payload"
 }
 
 placed() {
   local i
   for ((i = 1; i <= n; i++)); do
-    envelope OrderPlaced 1 "$i" "{\"customerId\":\"cus_$i\",\"amountMinor\":$((i * 100)),\"currency\":\"DKK\"}"
+    envelope $((i - 1)) OrderPlaced 1 "$i" "{\"customerId\":\"cus_$i\",\"amountMinor\":$((i * 100)),\"currency\":\"DKK\"}"
   done
 }
 
@@ -54,16 +56,16 @@ settled() {
   local i
   for ((i = 1; i <= n; i++)); do
     if ((i % 2 == 0)); then
-      envelope PaymentCompleted 2 "$i" "{\"paymentId\":\"pay_${prefix}_$i\",\"amountMinor\":$((i * 100))}"
+      envelope $((n + i - 1)) PaymentCompleted 2 "$i" "{\"paymentId\":\"pay_${prefix}_$i\",\"amountMinor\":$((i * 100))}"
     else
-      envelope OrderCancelled 3 "$i" '{"reason":"customer_request"}'
+      envelope $((n + i - 1)) OrderCancelled 3 "$i" '{"reason":"customer_request"}'
     fi
   done
 }
 
 post() {
-  xargs -0 -n 1 -P 8 curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 \
-    -H 'Content-Type: application/json' "$api/events" --data-raw || true
+  xargs -0 -n 4 -P 8 curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 \
+    -H 'Content-Type: application/json' "$api/events" || true
 }
 
 # The API returns 202 only after Kafka acknowledges, so once this phase ends every
