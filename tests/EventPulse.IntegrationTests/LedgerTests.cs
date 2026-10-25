@@ -19,8 +19,11 @@ public sealed class LedgerTests(StackFixture stack) : IClassFixture<StackFixture
     {
         await stack.StartWorkerAsync();
         _api = _factory
-            .WithWebHostBuilder(b => b.UseSetting("Kafka:BootstrapServers", stack.Kafka.GetBootstrapAddress()))
+            .WithWebHostBuilder(b => b
+                .UseSetting("Kafka:BootstrapServers", stack.Kafka.GetBootstrapAddress())
+                .UseSetting("ConnectionStrings:Redis", stack.Redis.GetConnectionString()))
             .CreateClient();
+        _api.DefaultRequestHeaders.Add("X-Api-Key", $"ledger-tests-{Guid.NewGuid():N}");
     }
 
     public async Task DisposeAsync()

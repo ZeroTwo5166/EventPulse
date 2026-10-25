@@ -35,7 +35,10 @@ public sealed class StackFixture : IAsyncLifetime
         .WithPortBinding(FreePort(), 5432)
         .Build();
 
-    public RedisContainer Redis { get; } = new RedisBuilder("redis:7").Build();
+    // Same reason as Postgres: the API's multiplexer reconnects to the port it was first given.
+    public RedisContainer Redis { get; } = new RedisBuilder("redis:7")
+        .WithPortBinding(FreePort(), 6379)
+        .Build();
 
     public async Task InitializeAsync()
     {

@@ -101,7 +101,7 @@ internal static class Endpoints
         return null;
     }
 
-    private static IResult Invalid(string field, string reason) =>
+    public static IResult Invalid(string field, string reason) =>
         Results.Problem(
             statusCode: StatusCodes.Status400BadRequest,
             title: "Invalid event",

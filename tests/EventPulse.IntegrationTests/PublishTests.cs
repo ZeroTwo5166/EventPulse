@@ -16,8 +16,11 @@ public sealed class PublishTests(StackFixture stack) : IClassFixture<StackFixtur
     public async Task Posted_event_lands_on_orders_events_keyed_by_order()
     {
         await using var factory = new WebApplicationFactory<Program>();
-        var api = factory.WithWebHostBuilder(b => b.UseSetting("Kafka:BootstrapServers", stack.Kafka.GetBootstrapAddress()));
+        var api = factory.WithWebHostBuilder(b => b
+            .UseSetting("Kafka:BootstrapServers", stack.Kafka.GetBootstrapAddress())
+            .UseSetting("ConnectionStrings:Redis", stack.Redis.GetConnectionString()));
         using var client = api.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", "publish-tests");
 
         var posted = new EventEnvelope(
             Guid.NewGuid(),
