@@ -19,6 +19,16 @@ fresh() {
   printf 'chaos-%s-%(%s)T' "$1" -1
 }
 
+# Must stay identical to seed.sh.
+fnv() {
+  local s=$1 h=-3750763034362895579 i c
+  for ((i = 0; i < ${#s}; i++)); do
+    printf -v c '%d' "'${s:i:1}"
+    ((h ^= c, h *= 1099511628211))
+  done
+  printf '%016x' "$h"
+}
+
 container() {
   local id
   id=$(docker compose ps -aq "$1")
