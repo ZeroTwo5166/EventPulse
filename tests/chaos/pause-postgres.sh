@@ -64,32 +64,11 @@ if verify "$prefix"; then
   verified=1
 fi
 
-mapfile -t lines < <(logs worker "$since" "Attempt " "$ledger_category")
-ledger=${#lines[@]}
-report "retry-in-place order-ledger" "${lines[@]}"
-mapfile -t lines < <(logs worker "$since" "Attempt " "$notifications_category")
-notifications=${#lines[@]}
-report "retry-in-place order-notifications" "${lines[@]}"
-mapfile -t lines < <(logs worker "$since" "Dead-letter write " "$ledger_category")
-writes=${#lines[@]}
-report "dead-letter write retries order-ledger" "${lines[@]}"
-mapfile -t lines < <(logs worker "$since" "Retries exhausted")
-report "retries exhausted" "${lines[@]}"
-mapfile -t lines < <(logs worker "$since" "Deadline passed")
-report "deadline passed" "${lines[@]}"
-
-where="left(order_id, $((${#prefix} + 1))) = '${prefix}_'"
-dead=$(sql -c "select count(*) from dead_letters where $where")
-echo "dead_letters for $prefix=$dead"
-if ((dead > 0)); then
-  echo "  reason|detail|attempts|event_type|order_id"
-  while IFS= read -r row; do
-    echo "  $row"
-  done < <(sql -c "select reason, detail, attempts, event_type, order_id from dead_letters where $where order by id")
-fi
+retries "$since"
+dead_letters "$prefix"
 echo
 
-echo "pause=$pause verify_ok=$verified dead_letters=$dead retries_order_ledger=$ledger retries_order_notifications=$notifications retries_total=$((ledger + notifications)) dead_letter_write_retries=$writes lag0_after_unpause=$caught_up"
+echo "pause=$pause verify_ok=$verified dead_letters=$dead retries_order_ledger=$retries_ledger retries_order_notifications=$retries_notifications retries_total=$((retries_ledger + retries_notifications)) dead_letter_write_retries=$dead_letter_writes lag0_after_unpause=$caught_up"
 if ((pause > 10)); then
   echo "REPORT (no pass condition for ${pause}s)"
   exit 0

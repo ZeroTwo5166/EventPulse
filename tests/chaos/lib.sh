@@ -132,3 +132,43 @@ report() {
     echo "  ${!i}"
   done
 }
+
+# Retry-in-place lines from the worker since the time. Sets retries_ledger, retries_notifications,
+# dead_letter_writes, exhausted and deadline.
+retries() {
+  local -a lines
+  mapfile -t lines < <(logs worker "$1" "Attempt " "$ledger_category")
+  retries_ledger=${#lines[@]}
+  report "retry-in-place order-ledger" "${lines[@]}"
+  mapfile -t lines < <(logs worker "$1" "Attempt " "$notifications_category")
+  retries_notifications=${#lines[@]}
+  report "retry-in-place order-notifications" "${lines[@]}"
+  mapfile -t lines < <(logs worker "$1" "Dead-letter write " "$ledger_category")
+  dead_letter_writes=${#lines[@]}
+  report "dead-letter write retries order-ledger" "${lines[@]}"
+  mapfile -t lines < <(logs worker "$1" "Retries exhausted")
+  exhausted=${#lines[@]}
+  report "retries exhausted" "${lines[@]}"
+  mapfile -t lines < <(logs worker "$1" "Deadline passed")
+  deadline=${#lines[@]}
+  report "deadline passed" "${lines[@]}"
+}
+
+# SQL condition on an order_id column for the prefix's orders. The trailing '_' keeps prefix p1 from matching p12.
+of_prefix() {
+  printf "left(%s, %d) = '%s_'" "$1" $((${#2} + 1)) "$2"
+}
+
+# Prints the prefix's dead_letters rows. Sets dead to their count.
+dead_letters() {
+  local where row
+  where=$(of_prefix order_id "$1")
+  dead=$(sql -c "select count(*) from dead_letters where $where")
+  echo "dead_letters for $1=$dead"
+  if ((dead > 0)); then
+    echo "  reason|detail|attempts|event_type|order_id"
+    while IFS= read -r row; do
+      echo "  $row"
+    done < <(sql -c "select reason, detail, attempts, event_type, order_id from dead_letters where $where order by id")
+  fi
+}
