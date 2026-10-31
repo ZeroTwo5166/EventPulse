@@ -13,7 +13,7 @@ What the repo must prove, in order of priority:
 1. A consumer can crash mid-batch and the ledger stays correct after restart.
 2. The same event delivered twice changes the ledger once.
 3. Events for one order are applied in order; events for different orders run in parallel.
-4. A poison event ends up on a dead-letter topic after N retries without blocking the partition.
+4. A poison event, one that cannot be read as a valid event, is dead-lettered immediately with no retries and does not block the partition. A business conflict is also dead-lettered without retries.
 5. The API refuses excess traffic using a Redis rate limit, and behaves predictably when Redis is down.
 6. Every claim above has a test or a written failure-injection result behind it.
 
@@ -39,10 +39,10 @@ Two deployable .NET 8 projects plus three infrastructure containers, all started
 | Shared | `EventPulse.Contracts` (class library) | Event envelope, event payloads, topic names, serialization |
 | Kafka | `confluentinc/cp-kafka` single broker, KRaft mode | Durable log; `orders.events` (6 partitions), `orders.events.dlq` |
 | PostgreSQL | `postgres:16` | `orders` ledger, `processed_events` idempotency table, `dead_letters` |
-| Redis | `redis:7` | Sliding-window rate limit per API key; nothing else |
+| Redis | `redis:7` | Fixed-window rate limit per API key; nothing else |
 
 ```
-Client ──POST /events──▶ EventPulse.Api ──publish──▶ Kafka (orders.events, key=orderId) ──poison──▶ orders.events.dlq
+Client ──POST /events──▶ EventPulse.Api ──publish──▶ Kafka (orders.events, key=orderId) ──dead-letter──▶ orders.events.dlq
                               │                           │
                          INCR + TTL                    consume
                               ▼                           ▼
@@ -181,7 +181,7 @@ A retry topic breaks per-order ordering: a retried `OrderPlaced` can land after 
 
 One message at a time per consumer instance. Parallelism comes from partitions and from running more Worker instances, not from `Task.WhenAll` inside a consumer. That keeps the offset-commit reasoning trivially correct. State it explicitly; a reviewer will otherwise assume you missed it.
 
-**Poison message guard**
+**Unclassified exceptions**
 
 An exception in the handler that is not classified (bug in your own code) counts as transient and goes through the retry path. After exhaustion it is dead-lettered, so a bug cannot wedge a partition forever.
 
@@ -195,7 +195,7 @@ The notifications consumer uses the same retry schedule through the same shared 
 
 ## Redis
 
-Redis does one job: a per-API-key rate limit of 100 requests per 10-second window on `POST /events`. One job done properly beats three done half-way.
+Redis does one job: a fixed-window rate limit on `POST /events` of 100 requests per 10-second window per API key. The key comes from the `X-Api-Key` header; a request without it gets 400. The limit, window and timeout are in the `RateLimit` section of the API's `appsettings.json`. One job done properly beats three done half-way.
 
 **Algorithm: fixed window with atomic increment**
 
@@ -203,16 +203,16 @@ Redis does one job: a per-API-key rate limit of 100 requests per 10-second windo
 key = ratelimit:{apiKey}:{floor(now / 10s)}
 n   = INCR key
 if n == 1: EXPIRE key 10
-if n > 100: return 429 with Retry-After
+if n > 100: return 429, Retry-After = seconds left in the window
 ```
 
-The two commands run inside a small Lua script (`EVAL`) so a concurrent request cannot see `n == 1` twice and leave a key without a TTL. Use `StackExchange.Redis` with one shared `ConnectionMultiplexer` registered as a singleton.
+INCR and EXPIRE run in one Lua script (`EVAL`), so a connection dropped between the two commands cannot leave a key with no TTL. Use `StackExchange.Redis` with one shared `ConnectionMultiplexer` registered as a singleton.
 
 Fixed window is chosen over sliding log because it is two Redis operations and the burst-at-boundary weakness is easy to explain. Say so in the README; being able to name the weakness is the point.
 
 **When Redis is down: fail open**
 
-If the multiplexer is disconnected or the call times out (200 ms), the API logs a warning, increments a `ratelimit_bypassed` counter, and **accepts** the request. Reason: the rate limit protects Kafka from abuse, it is not a security boundary, and refusing all traffic because a cache died is the worse failure. This is a decision, not a default; the README says what the fail-closed alternative would protect against and when you would pick it.
+If the multiplexer is disconnected, the script takes longer than 200 ms, or the call fails with a `RedisException`, the API logs a warning (`ratelimit bypassed, Redis <reason>`), increments a `ratelimit_bypassed` counter, and **accepts** the request without counting it. The multiplexer is created with `AbortOnConnectFail = false`, so the API also starts while Redis is down and reconnects in the background. Reason: the rate limit protects Kafka from abuse, it is not a security boundary, and refusing all traffic because a cache died is the worse failure. This is a decision, not a default; the README says what the fail-closed alternative would protect against and when you would pick it.
 
 **Tests**
 
@@ -233,9 +233,12 @@ Write this table into the README on day one as hypotheses. Each row gets a "Veri
 | Kafka broker restarted while Worker is consuming | Worker reconnects, resumes from last committed offset, no loss | Committed offsets are durable in Kafka | |
 | Postgres down for 10 s | Retries with backoff, succeeds when DB returns, no dead letters | 6 attempts, waits sum to 15.5 s | |
 | Postgres down for 60 s | Events dead-lettered as `RetriesExhausted`; partition continues afterwards | Retries bounded by design | |
+| Postgres down long enough that an `OrderPlaced` is dead-lettered as `RetriesExhausted` | The order's later `PaymentCompleted` or `OrderCancelled` is dead-lettered as `Conflict` / `OrderNotFound` with no retries and its offset is committed. The order has no ledger row; its notifications are still written. Nothing repairs it automatically. | Same partition, one message at a time: the later event is read only after the `OrderPlaced` dead letter is committed, so the order can never exist when it is applied | |
 | Redis down | API accepts all traffic, warning logged | Fail open by decision | |
 | Malformed JSON published | Dead-lettered immediately, partition continues | No retry for non-transient | |
 | 2 Worker instances, one killed | Partitions rebalance to survivor within session timeout, no loss | Consumer group protocol | |
+
+Any dead-lettered `OrderPlaced` with a readable `orderId` has the same `OrderNotFound` knock-on, whatever the reason it was dead-lettered. Replaying the original messages requires deleting their `processed_events` rows first; otherwise they are skipped as `Duplicate`.
 
 **Known window the design does not close**
 
@@ -249,12 +252,12 @@ The seed is a `scripts/seed.sh` that POSTs 1,000 events for 500 orders with a kn
 
 | # | Script | Injection | Pass condition |
 | --- | --- | --- | --- |
-| 1 | `kill-worker.sh` | `docker kill worker` at a random point during seed, then `docker start` | `verify.sh` prints OK; log shows ≥ 1 `duplicate` line |
+| 1 | `kill-worker.sh` | Per cycle, a fresh seed; `docker kill worker` 2–13 s into it, `docker start` 5 s later | `verify.sh` prints OK in every cycle; `Duplicate` and open-transaction EOF lines are printed as evidence, not required |
 | 2 | `duplicate-events.sh` | Seed, then replay the same 1,000 POSTs | OK; `processed_events` has 1,000 rows, not 2,000 |
 | 3 | `restart-kafka.sh` | `docker restart kafka` mid-seed | OK; Worker logs show reconnect and resume |
 | 4 | `pause-postgres.sh` | `docker pause postgres` for 10 s mid-seed | OK; logs show retries, zero dead letters |
-| 5 | `stop-postgres-long.sh` | `docker stop postgres` for 60 s | `dead_letters` has rows with `RetriesExhausted`; after `docker start`, new events process |
-| 6 | `stop-redis.sh` | `docker stop redis` mid-seed | OK; API logs `ratelimit bypassed`; 429 count is 0 |
+| 5 | `stop-postgres-long.sh` | `docker stop postgres` for 60 s mid-seed, then `docker start`; a second 20-order seed after the restart | Postgres ready within 60 s; lag 0 on both groups; ≥ 1 `RetriesExhausted` row; every other row is `Conflict` / `OrderNotFound` for an order whose `OrderPlaced` was `RetriesExhausted`; every wrong order has a dead letter and the `processed_events` and notifications checks pass; no `Deadline passed`; the second seed verifies OK with no dead letters |
+| 6 | `stop-redis.sh` | `docker stop redis` for 30 s mid-seed, then `docker start`; then bursts of 250 requests under one key until one gets a 429 | Redis answers PING within 60 s; every seed request gets 202; API logs ≥ 1 `ratelimit bypassed`; lag 0 on both groups; OK; no dead letters; a burst starting within 60 s of PONG gets a 429 |
 | 7 | `poison.sh` | Publish 5 malformed messages directly with `kafka-console-producer` | 5 rows in `dead_letters` with `Malformed`; seed still completes OK |
 | 8 | `rebalance.sh` | `--scale worker=2`, kill one mid-seed | OK; survivor's log shows partitions assigned |
 | 9 | `sigterm.sh` | `docker stop worker` (SIGTERM, 10 s grace) mid-seed, restart | OK; zero `duplicate` lines (clean shutdown committed everything) |
@@ -299,52 +302,29 @@ eventpulse/
 
 **Before the first commit**
 
-- `.gitignore` contains `CLAUDE.md`, `.claude/`, `.mcp.json`, `bin/`, `obj/`, `.env`.
-- `~/.claude/settings.json` has `"attribution": { "commit": "", "pr": "" }`.
+- `.gitignore` contains `.mcp.json`, `bin/`, `obj/`, `.env`.
 - `.editorconfig` with `dotnet_diagnostic` severities and `csharp_style_*` rules you actually want; run `dotnet format --verify-no-changes` in CI.
-- Local `CLAUDE.md` with these rules, verbatim:
-    - No comments unless they explain a non-obvious *why*. No comments that restate the code.
-    - No XML doc comments on private or internal members.
-    - No emoji anywhere, including logs and markdown.
-    - Do not create README, summary or documentation files unless asked.
-    - No interface until there are two implementations. No `Manager`, `Helper`, `Service` suffixes.
-    - Match the style of `src/EventPulse.Worker/Consumers/OrderLedgerConsumer.cs` (write this file by hand first).
-    - Before editing, read the relevant files. Propose a plan. Make bounded changes. Run `dotnet build` and the relevant tests. Report exact commands and output. Never claim a test passed without running it.
 
 **Written by hand, never generated**
 
-- `README.md`. Claude can list the facts to include; the sentences are yours. Plain structure: what it is, how to run it, the guarantees table, measured numbers, known limitations, what you would do next. No badges, no feature bullet lists, no adjectives like robust or comprehensive.
+- `README.md`. Plain structure: what it is, how to run it, the guarantees table, measured numbers, known limitations, what you would do next. No badges, no feature bullet lists, no adjectives like robust or comprehensive.
 - `docs/decisions.md` and `docs/failure-tests.md`. These are your interview notes; writing them is how you learn the material.
 - `OrderLedgerConsumer.cs`, the first version. It is the style reference every later file is matched against.
 - All commit messages.
 
-**Things that read as generated, strip on sight**
-
-- A comment that restates the line below it
-- `/// <summary>` on a private field or a one-line method
-- `_logger.LogError(ex, "An error occurred")` wrapping a whole method
-- `ArgumentNullException.ThrowIfNull` on every parameter of an internal method
-- `#region` blocks, `I*Service` interfaces with one implementation, `*Helper` and `*Manager` classes
-- Markdown files you did not ask for (`IMPLEMENTATION_NOTES.md`, `SUMMARY.md`)
-- Emoji or `Co-Authored-By` anywhere in `git log`
-
 **Commit discipline**
 
 - One logical change per commit. Imperative, lower-case, under 60 characters: `add kafka producer to api`, `retry transient failures in place`.
-- Commit after every bounded Claude Code task, after reading the diff.
+- Commit after every bounded task, after reading the diff.
 - `docs/decisions.md` gets one dated entry per design decision, 3–5 lines each. This is the file you re-read before an interview.
-
-**Claude Code session pattern**
-
-One session per checklist item. Open with: "Read `docs/decisions.md` and the files under `src/EventPulse.Worker`. Then implement item N from the checklist: …". Review the diff, run the tests yourself, commit yourself. Close the session. A fresh session every item keeps context clean and stops the model from drifting into its own style.
 
 ## Checklist, Oct 22 to Nov 9
 
-Each item is one Claude Code session and one or more commits. Tick it only when its test passes and the commit is in. If a day slips, drop from the bottom of the stretch list first, then from milestone 4, never from milestones 1–3.
+Each item is one or more commits. Tick it only when its test passes and the commit is in. If a day slips, drop from the bottom of the stretch list first, then from milestone 4, never from milestones 1–3.
 
 **Milestone 1 — Working pipeline (Oct 22–24)**
 
-- [ ] Create repo, `.gitignore`, `.editorconfig`, `Directory.Build.props` (nullable on, warnings as errors), local `CLAUDE.md`, attribution off. First commit is these files only.
+- [ ] Create repo, `.gitignore`, `.editorconfig`, `Directory.Build.props` (nullable on, warnings as errors). First commit is these files only.
 - [ ] `docker-compose.yml` with Kafka (KRaft), Postgres, Redis, `kafka-init` creating both topics. `docker compose up` works from a clean clone.
 - [ ] `EventPulse.Contracts`: envelope record, three payload records, `Topics` constants, JSON options.
 - [ ] `EventPulse.Api`: `POST /events` validates the envelope, publishes with `Acks=All`, returns 202 or 503. No rate limit yet.
@@ -378,7 +358,7 @@ Each item is one Claude Code session and one or more commits. Tick it only when 
 - [ ] `/health` and `/metrics` endpoints. Compose health checks on both services.
 - [ ] Run the seed at 10,000 events, record events/second and end-to-end latency from the API timestamp to `orders.updated_at`. Three runs, report the median. These are the only numbers that go on the CV.
 - [ ] Stretch, only if everything above is ticked by Nov 3: transactional outbox in the API (`outbox` table, relay `BackgroundService`), with the API-crash-after-insert test.
-- [ ] Fresh-eyes review: new Claude Code session, prompt is "Find race conditions, incorrect offset handling, swallowed exceptions and places where a crash loses or duplicates an event. Do not fix anything; list them with file and line." Fix what is real, note what is not.
+- [ ] Fresh-eyes review: find race conditions, incorrect offset handling, swallowed exceptions and places where a crash loses or duplicates an event, and list them with file and line before fixing anything. Fix what is real, note what is not.
 
 **Milestone 5 — Finish (Nov 6–8)**
 
@@ -391,7 +371,7 @@ Each item is one Claude Code session and one or more commits. Tick it only when 
 **Nov 9 — Buffer and verification**
 
 - [ ] Clone the repo into a fresh directory on a machine (or container) that has never seen it. Follow the README literally. It works, or you fix the README.
-- [ ] CI green on `main`. No open TODOs. No AI-style artifacts in the repo (`git grep -i "co-authored\|generated with\|claude"` returns nothing).
+- [ ] CI green on `main`. No open TODOs.
 - [ ] CV bullets written from the verified table and measured numbers only.
 
 ## Definition of done

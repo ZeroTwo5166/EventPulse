@@ -8,7 +8,5 @@ obj/
 .env.*
 TestResults/
 
-CLAUDE.md
-.claude/
 .mcp.json
 !.env.example
