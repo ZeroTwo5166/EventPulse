@@ -229,13 +229,13 @@ Write this table into the README on day one as hypotheses. Each row gets a "Veri
 | --- | --- | --- | --- |
 | Worker killed after DB commit, before offset commit | Event redelivered, detected as duplicate, ledger unchanged | `processed_events` PK | |
 | Worker killed mid-transaction | Transaction rolled back, event redelivered, applied once | Postgres atomicity + redelivery | |
-| Same event POSTed twice | Second is accepted by the API (202) but ledger changes once | Idempotency is in the consumer, not the API | |
+| Same event POSTed twice | Second is accepted by the API (202) but ledger changes once | Idempotency is in the consumer, not the API | 2026-11-01, `duplicate-events.sh` |
 | Kafka broker restarted while Worker is consuming | Worker reconnects, resumes from last committed offset, no loss | Committed offsets are durable in Kafka | |
-| Postgres down for 10 s | Retries with backoff, succeeds when DB returns, no dead letters | 6 attempts, waits sum to 15.5 s | |
-| Postgres down for 60 s | Events dead-lettered as `RetriesExhausted`; partition continues afterwards | Retries bounded by design | |
-| Postgres down long enough that an `OrderPlaced` is dead-lettered as `RetriesExhausted` | The order's later `PaymentCompleted` or `OrderCancelled` is dead-lettered as `Conflict` / `OrderNotFound` with no retries and its offset is committed. The order has no ledger row; its notifications are still written. Nothing repairs it automatically. | Same partition, one message at a time: the later event is read only after the `OrderPlaced` dead letter is committed, so the order can never exist when it is applied | |
-| Redis down | API accepts all traffic, warning logged | Fail open by decision | |
-| Malformed JSON published | Dead-lettered immediately, partition continues | No retry for non-transient | |
+| Postgres down for 10 s | Retries with backoff, succeeds when DB returns, no dead letters | 6 attempts, waits sum to 15.5 s | 2026-11-01, `pause-postgres.sh 10` |
+| Postgres down for 60 s | Events dead-lettered as `RetriesExhausted`; partition continues afterwards | Retries bounded by design | 2026-11-01, `stop-postgres-long.sh 60` (PASS), `pause-postgres.sh 60` (REPORT) |
+| Postgres down long enough that an `OrderPlaced` is dead-lettered as `RetriesExhausted` | The order's later `PaymentCompleted` or `OrderCancelled` is dead-lettered as `Conflict` / `OrderNotFound` with no retries and its offset is committed. The order has no ledger row; its notifications are still written. Nothing repairs it automatically. | Same partition, one message at a time: the later event is read only after the `OrderPlaced` dead letter is committed, so the order can never exist when it is applied | 2026-11-01, `stop-postgres-long.sh 60` (PASS), `pause-postgres.sh 60` (REPORT) |
+| Redis down | API accepts all traffic, warning logged | Fail open by decision | 2026-11-01, `stop-redis.sh 30` |
+| Malformed JSON published | Dead-lettered immediately, partition continues | No retry for non-transient | 2026-11-01, `poison.sh` |
 | 2 Worker instances, one killed | Partitions rebalance to survivor within session timeout, no loss | Consumer group protocol | |
 
 Any dead-lettered `OrderPlaced` with a readable `orderId` has the same `OrderNotFound` knock-on, whatever the reason it was dead-lettered. Replaying the original messages requires deleting their `processed_events` rows first; otherwise they are skipped as `Duplicate`.
