@@ -71,6 +71,13 @@ services:
       dockerfile: src/EventPulse.Api/Dockerfile
     ports:
       - "8080:8080"
+    # The aspnet image has no curl or wget, and its /bin/sh is dash, which has no /dev/tcp.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -86,6 +93,12 @@ services:
     restart: unless-stopped
     # Longer than Host:ShutdownTimeout in the Worker's appsettings.json, so the host gives up before SIGKILL.
     stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081 && printf 'GET /health HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     depends_on:

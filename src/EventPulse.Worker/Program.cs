@@ -2,13 +2,14 @@ using Confluent.Kafka;
 using EventPulse.Worker;
 using EventPulse.Worker.Consumers;
 using EventPulse.Worker.Ledger;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 
 
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Stopping both consumers at once keeps the shutdown budget at one message plus Close(), not two of each.
 builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host"));
@@ -32,16 +33,21 @@ builder.Services.AddSingleton(sp =>
     };
     return new ProducerBuilder<string, byte[]>(config).Build();
 });
+builder.Services.AddSingleton(sp =>
+    new DependentAdminClientBuilder(sp.GetRequiredService<IProducer<string, byte[]>>().Handle).Build());
 builder.Services.AddSingleton<Counters>();
 builder.Services.AddSingleton<Retry>();
 builder.Services.AddHostedService<OrderLedgerConsumer>();
 builder.Services.AddHostedService<OrderNotificationsConsumer>();
 
-var host = builder.Build();
+var app = builder.Build();
 
-using (var scope = host.Services.CreateScope())
+using (var scope = app.Services.CreateScope())
 {
     await scope.ServiceProvider.GetRequiredService<LedgerDbContext>().Database.MigrateAsync();
 }
 
-await host.RunAsync();
+app.MapGet("/health", Endpoints.Health);
+app.MapGet("/metrics", Endpoints.Metrics);
+
+await app.RunAsync();

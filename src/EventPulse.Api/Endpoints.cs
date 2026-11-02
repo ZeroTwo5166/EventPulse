@@ -4,6 +4,7 @@ using System.Text.Json;
 using Confluent.Kafka;
 using EventPulse.Contracts;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace EventPulse.Api;
 
@@ -63,16 +64,40 @@ internal static class Endpoints
         return Results.Accepted(value: new { envelope.EventId });
     }
 
-    public static IResult Health(IAdminClient admin, IOptions<KafkaOptions> options)
+    // Redis never changes the status code: the rate limit fails open, so the API still works without it.
+    public static async Task<IResult> Health(
+        IAdminClient admin,
+        IConnectionMultiplexer redis,
+        IOptions<KafkaOptions> kafka,
+        IOptions<RateLimitOptions> rateLimit)
     {
+        var redisStatus = await Ping(redis, rateLimit.Value.Timeout) ? "ok" : "degraded";
         try
         {
-            admin.GetMetadata(Topics.Events, options.Value.HealthTimeout);
-            return Results.Ok(new { kafka = "ok" });
+            admin.GetMetadata(Topics.Events, kafka.Value.HealthTimeout);
+            return Results.Ok(new { kafka = "ok", redis = redisStatus });
         }
         catch (KafkaException)
         {
-            return Results.Json(new { kafka = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            return Results.Json(new { kafka = "unavailable", redis = redisStatus }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    private static async Task<bool> Ping(IConnectionMultiplexer redis, TimeSpan timeout)
+    {
+        if (!redis.IsConnected)
+        {
+            return false;
+        }
+
+        try
+        {
+            await redis.GetDatabase().PingAsync().WaitAsync(timeout);
+            return true;
+        }
+        catch (Exception ex) when (ex is TimeoutException or RedisException)
+        {
+            return false;
         }
     }
 

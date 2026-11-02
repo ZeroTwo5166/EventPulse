@@ -51,7 +51,7 @@ Client ──POST /events──▶ EventPulse.Api ──publish──▶ Kafka (
                                                   apply, retry, dead-letter)
 ```
 
-The API never touches Postgres. The Worker never serves HTTP. That split is what makes the crash tests meaningful: killing the Worker cannot affect ingestion, and the only shared state is the Kafka log. The Worker can be stopped for an hour and the API keeps accepting events.
+The API never touches Postgres. The Worker serves only `/health` and `/metrics` on port 8081, not published to the host, for compose health checks. That split is what makes the crash tests meaningful: killing the Worker cannot affect ingestion, and the only shared state is the Kafka log. The Worker can be stopped for an hour and the API keeps accepting events.
 
 Within the Worker, the first version runs one consumer group (`order-ledger`) that applies all three event types. A second group (`order-notifications`, writes a row to a `notifications` table) is added in milestone 2 only to demonstrate that two groups read the same log independently; it is otherwise trivial.
 

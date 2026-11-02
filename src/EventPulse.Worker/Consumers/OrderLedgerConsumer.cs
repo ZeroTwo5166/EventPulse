@@ -259,6 +259,7 @@ internal sealed class OrderLedgerConsumer(
 
         db.SaveChanges();
         tx.Commit();
+        counters.AddProcessed();
 
         logger.LogInformation(
             "Applied {EventType} {EventId} for {OrderId} at {Partition}:{Offset}",

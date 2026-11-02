@@ -7,6 +7,8 @@ The API validates and publishes; it never opens a Postgres connection. The
 Worker consumes and writes the ledger; it never serves HTTP. The alternative
 was one process with a background consumer, which is simpler to run but makes
 the crash tests meaningless: killing the consumer would also kill ingestion.
+2026-11-02: the Worker now also listens on 8081 for /health and /metrics, used
+only by compose health checks; it still serves no business traffic.
 
 ## 2026-10-22 Kafka in KRaft mode
 

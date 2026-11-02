@@ -40,6 +40,9 @@ public sealed class StackFixture : IAsyncLifetime
         .WithPortBinding(FreePort(), 6379)
         .Build();
 
+    // Test classes run in parallel, each with its own Worker, so the 8081 in appsettings.json would collide.
+    public string WorkerUrl { get; } = $"http://127.0.0.1:{FreePort()}";
+
     public async Task InitializeAsync()
     {
         await Task.WhenAll(Kafka.StartAsync(), Postgres.StartAsync(), Redis.StartAsync());
@@ -99,6 +102,7 @@ public sealed class StackFixture : IAsyncLifetime
             $"--contentRoot={root}",
             $"--ConnectionStrings:Ledger={ledger}",
             $"--Kafka:BootstrapServers={Kafka.GetBootstrapAddress()}",
+            $"--Urls={WorkerUrl}",
         ];
 
         var capture = new HostCapture(ledger);
