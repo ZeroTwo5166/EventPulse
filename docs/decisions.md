@@ -56,6 +56,40 @@ quieter but hides the fact that a redelivery happened; the explicit violation is
 logged and counted. EF's own error logging for the two failure events is lowered
 to Information so a duplicate does not look like an outage.
 
+## 2026-11-02 Retry in place, not a retry topic
+
+A transient failure retries the same message in the consumer loop without
+advancing the offset: six attempts with waits of 0.5, 1, 2, 4 and 8 seconds,
+then dead-letter and commit. A retry topic was rejected because it breaks
+per-order ordering: a retried OrderPlaced can be reprocessed after the
+PaymentCompleted that followed it on the main topic. The cost is head-of-line
+blocking, about 28 seconds per message during a full Postgres outage. For an
+order ledger, ordering is worth more than partition throughput during an outage.
+A retry topic is the right choice when the opposite holds.
+
+## 2026-11-02 Rate limit fails open
+
+If Redis is disconnected, the Lua script takes longer than 200 ms, or the call
+throws, the API logs a warning, increments ratelimit_bypassed and accepts the
+request without counting it. The rate limit protects Kafka from a noisy client;
+it is not a security boundary, and refusing all traffic because a cache is down
+is the worse failure. Fail closed would be right if the limit enforced a paid
+quota or guarded an expensive backend, where over-admitting costs more than an
+outage. The multiplexer is created with AbortOnConnectFail false so the API
+starts while Redis is down and reconnects in the background. Verified 2026-11-01
+with stop-redis.sh.
+
+## 2026-11-02 Fixed window, not sliding
+
+The limit is 100 requests per 10-second window per API key, keyed by
+ratelimit:{key}:{floor(now / 10)} and counted with one Lua script that does INCR
+and sets EXPIRE on the first hit. A fixed window lets a client send up to 200
+requests in the two seconds around a boundary. A sliding log or sliding window
+would remove that burst but needs a sorted set per key or two counters and a
+weighted sum, and the burst does not matter for a limit whose purpose is to keep
+one client from flooding Kafka. The script is atomic so a dropped connection
+between INCR and EXPIRE cannot leave a key that never expires.
+
 
 ## Notes for the README
 
