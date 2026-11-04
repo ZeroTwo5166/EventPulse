@@ -1,0 +1,39 @@
+measure label=live-1 prefix=measure-live-1-1793812813 orders=5000 events=10000 mode=live
+clock offset postgres-host=206ms (round trip 468ms)
+worker running, processed=10000 before the seed
+seed prefix=measure-live-1-1793812813 orders=5000 events=10000 202=10000 non-202=0
+seed took 273961ms
+processed=10000 at 437ms
+
+label=live-1 prefix=measure-live-1-1793812813 orders=5000 events=10000 mode=live
+clock offset postgres-host: 206 ms (round trip 468 ms)
+seed duration: 273961 ms
+events matched: 10000 of 10000
+end-to-end latency ms: p50=35 p95=64 p99=88 max=379
+system throughput: 36.6 events/s
+measure label=live-2 prefix=measure-live-2-1793813091 orders=5000 events=10000 mode=live
+clock offset postgres-host=193ms (round trip 439ms)
+worker running, processed=20000 before the seed
+seed prefix=measure-live-2-1793813091 orders=5000 events=10000 202=10000 non-202=0
+seed took 283018ms
+processed=10000 at 370ms
+
+label=live-2 prefix=measure-live-2-1793813091 orders=5000 events=10000 mode=live
+clock offset postgres-host: 193 ms (round trip 439 ms)
+seed duration: 283018 ms
+events matched: 10000 of 10000
+end-to-end latency ms: p50=35 p95=68 p99=93 max=343
+system throughput: 35.5 events/s
+measure label=live-3 prefix=measure-live-3-1793813377 orders=5000 events=10000 mode=live
+clock offset postgres-host=247ms (round trip 541ms)
+worker running, processed=30000 before the seed
+seed prefix=measure-live-3-1793813377 orders=5000 events=10000 202=10000 non-202=0
+seed took 297861ms
+processed=10000 at 469ms
+
+label=live-3 prefix=measure-live-3-1793813377 orders=5000 events=10000 mode=live
+clock offset postgres-host: 247 ms (round trip 541 ms)
+seed duration: 297861 ms
+events matched: 10000 of 10000
+end-to-end latency ms: p50=37 p95=75 p99=103 max=343
+system throughput: 33.7 events/s

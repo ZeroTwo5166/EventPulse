@@ -149,6 +149,7 @@ with m as (
 )
 select
   count(*),
+  round(min(ms)::numeric),
   round(percentile_cont(0.5) within group (order by ms)::numeric),
   round(percentile_cont(0.95) within group (order by ms)::numeric),
   round(percentile_cont(0.99) within group (order by ms)::numeric),
@@ -157,7 +158,7 @@ select
 from m;
 SQL
 } | sql)
-IFS='|' read -r matched p50 p95 p99 max system <<<"${row##*$'\n'}"
+IFS='|' read -r matched min p50 p95 p99 max system <<<"${row##*$'\n'}"
 
 echo
 echo "label=$label prefix=$prefix orders=$orders events=$events mode=$mode"
@@ -167,6 +168,6 @@ if ((!live)); then
   echo "worker throughput: $(rate "$events" "$worker_ms") events/s ($events events in ${worker_ms} ms)"
 fi
 echo "events matched: $matched of $events"
-echo "end-to-end latency ms: p50=$p50 p95=$p95 p99=$p99 max=$max"
+echo "end-to-end latency ms: min=$min p50=$p50 p95=$p95 p99=$p99 max=$max"
 echo "system throughput: $system events/s"
 ((matched == events))

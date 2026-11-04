@@ -10,3 +10,4 @@ TestResults/
 
 .mcp.json
 !.env.example
+/measure-*.log

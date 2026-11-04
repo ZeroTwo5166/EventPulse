@@ -356,8 +356,21 @@ Each item is one or more commits. Tick it only when its test passes and the comm
 
 - [ ] Chaos scripts 3, 5, 8, 9 run and documented.
 - [ ] `/health` and `/metrics` endpoints. Compose health checks on both services.
-- [ ] Run the seed at 10,000 events, record events/second and end-to-end latency from the seed's send time to `processed_events.processed_at`. Three runs, report the median. These are the only numbers that go on the CV.
+- [x] Run the seed at 10,000 events, record events/second and end-to-end latency from the seed's send time to `processed_events.processed_at`. Three runs, report the median. These are the only numbers that go on the CV.
   How to measure: `scripts/measure.sh [--live] 5000 <label>` seeds 10,000 events with `SEND_LOG` set, polls `/metrics` until `processed` has grown by 10,000, then joins the send log to `processed_events` and prints one summary block. Run it without `--live` for Worker throughput: the Worker is stopped during the seed and started after it, so its latency includes the wait in Kafka. Run it with `--live` for end-to-end latency: the Worker runs throughout. `processed_at` is taken before the transaction commits, so latencies read a few ms low, and the seed starts a curl process per request, so system throughput is bounded by the seed rather than the pipeline.
+
+  Results, measured 2026-11-04 with `scripts/measure.sh`: 10,000 events (5,000 orders), three runs in each mode, medians reported. Full output in [`docs/measurements/measure-stopped.log`](measurements/measure-stopped.log) and [`docs/measurements/measure-live.log`](measurements/measure-live.log).
+
+  | Measure | Mode | Run 1 | Run 2 | Run 3 | Median |
+  | --- | --- | --- | --- | --- | --- |
+  | Worker throughput (events/s) | Worker stopped during seed | 229.3 | 243.6 | 265.4 | 243.6 |
+  | Latency p50 (ms) | `--live` | 35 | 35 | 37 | 35 |
+  | Latency p95 (ms) | `--live` | 64 | 68 | 75 | 68 |
+  | Latency p99 (ms) | `--live` | 88 | 93 | 103 | 93 |
+  | Latency max (ms) | `--live` | 379 | 343 | 343 | 343 |
+  | System throughput (events/s) | `--live` | 36.6 | 35.5 | 33.7 | 35.5 |
+
+  Worker throughput is the Worker clearing the 10,000-event backlog after the seed, and includes Worker startup (about 1.8 s; the first events were processed 1.7–1.8 s after start) and one poll interval (about 0.9 s) of imprecision. System throughput in live mode is limited by the seed script, which starts one curl process per request and reaches about 35 requests/s, not by the Worker. Latency is measured to `processed_events.processed_at`, taken before the commit, so real values are a few ms higher. The host/container clock offset read about 0.2 s, but that is mostly the `docker exec` round trip; a real offset of that size would be inconsistent with a p50 of 35 ms.
 - [ ] Stretch, only if everything above is ticked by Nov 3: transactional outbox in the API (`outbox` table, relay `BackgroundService`), with the API-crash-after-insert test.
 - [ ] Fresh-eyes review: find race conditions, incorrect offset handling, swallowed exceptions and places where a crash loses or duplicates an event, and list them with file and line before fixing anything. Fix what is real, note what is not.
 

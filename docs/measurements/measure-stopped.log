@@ -1,0 +1,170 @@
+measure label=stopped-1 prefix=measure-stopped-1-1793811678 orders=5000 events=10000 mode=stopped
+clock offset postgres-host=221ms (round trip 513ms)
+worker stopped
+seed prefix=measure-stopped-1-1793811678 orders=5000 events=10000 202=10000 non-202=0
+seed took 255987ms
+worker started
+processed=0 at 809ms
+processed=61 at 1800ms
+processed=248 at 2721ms
+processed=448 at 3650ms
+processed=649 at 4587ms
+processed=849 at 5487ms
+processed=1032 at 6397ms
+processed=1275 at 7388ms
+processed=1493 at 8303ms
+processed=1750 at 9218ms
+processed=1980 at 10110ms
+processed=2248 at 11039ms
+processed=2489 at 11958ms
+processed=2728 at 12897ms
+processed=2999 at 13862ms
+processed=3251 at 14790ms
+processed=3526 at 15726ms
+processed=3789 at 16636ms
+processed=4038 at 17585ms
+processed=4276 at 18509ms
+processed=4501 at 19463ms
+processed=4757 at 20576ms
+processed=5005 at 21618ms
+processed=5249 at 22566ms
+processed=5482 at 23515ms
+processed=5679 at 24520ms
+processed=5873 at 25448ms
+processed=6068 at 26408ms
+processed=6252 at 27444ms
+processed=6429 at 28460ms
+processed=6609 at 29414ms
+processed=6784 at 30438ms
+processed=6994 at 31427ms
+processed=7209 at 32363ms
+processed=7425 at 33319ms
+processed=7654 at 34344ms
+processed=7901 at 35348ms
+processed=8097 at 36280ms
+processed=8327 at 37180ms
+processed=8531 at 38114ms
+processed=8787 at 39029ms
+processed=9037 at 39950ms
+processed=9316 at 40904ms
+processed=9555 at 41837ms
+processed=9811 at 42708ms
+processed=10000 at 43595ms
+
+label=stopped-1 prefix=measure-stopped-1-1793811678 orders=5000 events=10000 mode=stopped
+clock offset postgres-host: 221 ms (round trip 513 ms)
+seed duration: 255987 ms
+worker throughput: 229.3 events/s (10000 events in 43595 ms)
+events matched: 10000 of 10000
+end-to-end latency ms: p50=148071 p95=264246 p99=282851 max=292899
+system throughput: 33.4 events/s
+measure label=stopped-2 prefix=measure-stopped-2-1793811981 orders=5000 events=10000 mode=stopped
+clock offset postgres-host=177ms (round trip 395ms)
+worker stopped
+seed prefix=measure-stopped-2-1793811981 orders=5000 events=10000 202=10000 non-202=0
+seed took 262620ms
+worker started
+processed=0 at 792ms
+processed=46 at 1813ms
+processed=223 at 2834ms
+processed=423 at 3824ms
+processed=608 at 4778ms
+processed=798 at 5729ms
+processed=1007 at 6723ms
+processed=1236 at 7709ms
+processed=1520 at 8666ms
+processed=1792 at 9681ms
+processed=2066 at 10729ms
+processed=2304 at 11710ms
+processed=2558 at 12655ms
+processed=2820 at 13649ms
+processed=3076 at 14614ms
+processed=3339 at 15585ms
+processed=3623 at 16608ms
+processed=3892 at 17613ms
+processed=4151 at 18550ms
+processed=4409 at 19481ms
+processed=4728 at 20624ms
+processed=4991 at 21598ms
+processed=5235 at 22591ms
+processed=5485 at 23541ms
+processed=5769 at 24576ms
+processed=6021 at 25497ms
+processed=6270 at 26414ms
+processed=6517 at 27344ms
+processed=6780 at 28313ms
+processed=7020 at 29312ms
+processed=7292 at 30337ms
+processed=7579 at 31347ms
+processed=7862 at 32251ms
+processed=8113 at 33164ms
+processed=8337 at 34139ms
+processed=8567 at 35133ms
+processed=8836 at 36058ms
+processed=9066 at 37055ms
+processed=9304 at 37999ms
+processed=9561 at 39028ms
+processed=9812 at 40074ms
+processed=10000 at 41039ms
+
+label=stopped-2 prefix=measure-stopped-2-1793811981 orders=5000 events=10000 mode=stopped
+clock offset postgres-host: 177 ms (round trip 395 ms)
+seed duration: 262620 ms
+worker throughput: 243.6 events/s (10000 events in 41039 ms)
+events matched: 10000 of 10000
+end-to-end latency ms: p50=159779 p95=270136 p99=287232 max=296450
+system throughput: 33.0 events/s
+measure label=stopped-3 prefix=measure-stopped-3-1793812288 orders=5000 events=10000 mode=stopped
+clock offset postgres-host=188ms (round trip 425ms)
+worker stopped
+seed prefix=measure-stopped-3-1793812288 orders=5000 events=10000 202=10000 non-202=0
+seed took 270518ms
+worker started
+processed=0 at 712ms
+processed=50 at 1691ms
+processed=250 at 2705ms
+processed=455 at 3720ms
+processed=655 at 4690ms
+processed=847 at 5613ms
+processed=1048 at 6582ms
+processed=1282 at 7496ms
+processed=1527 at 8440ms
+processed=1807 at 9437ms
+processed=2086 at 10475ms
+processed=2333 at 11420ms
+processed=2595 at 12361ms
+processed=2879 at 13346ms
+processed=3148 at 14272ms
+processed=3508 at 15452ms
+processed=3800 at 16405ms
+processed=4073 at 17376ms
+processed=4335 at 18295ms
+processed=4580 at 19182ms
+processed=4837 at 20101ms
+processed=5085 at 21029ms
+processed=5332 at 21927ms
+processed=5589 at 22894ms
+processed=5859 at 23867ms
+processed=6117 at 24762ms
+processed=6385 at 25660ms
+processed=6674 at 26544ms
+processed=6981 at 27472ms
+processed=7271 at 28377ms
+processed=7562 at 29275ms
+processed=7870 at 30295ms
+processed=8150 at 31219ms
+processed=8433 at 32128ms
+processed=8688 at 33040ms
+processed=8974 at 33966ms
+processed=9238 at 34866ms
+processed=9521 at 35771ms
+processed=9848 at 36774ms
+processed=10000 at 37666ms
+
+label=stopped-3 prefix=measure-stopped-3-1793812288 orders=5000 events=10000 mode=stopped
+clock offset postgres-host: 188 ms (round trip 425 ms)
+seed duration: 270518 ms
+worker throughput: 265.4 events/s (10000 events in 37666 ms)
+events matched: 10000 of 10000
+end-to-end latency ms: p50=154076 p95=274464 p99=292317 max=301866
+system throughput: 32.5 events/s
