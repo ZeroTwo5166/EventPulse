@@ -356,7 +356,8 @@ Each item is one or more commits. Tick it only when its test passes and the comm
 
 - [ ] Chaos scripts 3, 5, 8, 9 run and documented.
 - [ ] `/health` and `/metrics` endpoints. Compose health checks on both services.
-- [ ] Run the seed at 10,000 events, record events/second and end-to-end latency from the API timestamp to `orders.updated_at`. Three runs, report the median. These are the only numbers that go on the CV.
+- [ ] Run the seed at 10,000 events, record events/second and end-to-end latency from the seed's send time to `processed_events.processed_at`. Three runs, report the median. These are the only numbers that go on the CV.
+  How to measure: `scripts/measure.sh [--live] 5000 <label>` seeds 10,000 events with `SEND_LOG` set, polls `/metrics` until `processed` has grown by 10,000, then joins the send log to `processed_events` and prints one summary block. Run it without `--live` for Worker throughput: the Worker is stopped during the seed and started after it, so its latency includes the wait in Kafka. Run it with `--live` for end-to-end latency: the Worker runs throughout. `processed_at` is taken before the transaction commits, so latencies read a few ms low, and the seed starts a curl process per request, so system throughput is bounded by the seed rather than the pipeline.
 - [ ] Stretch, only if everything above is ticked by Nov 3: transactional outbox in the API (`outbox` table, relay `BackgroundService`), with the API-crash-after-insert test.
 - [ ] Fresh-eyes review: find race conditions, incorrect offset handling, swallowed exceptions and places where a crash loses or duplicates an event, and list them with file and line before fixing anything. Fix what is real, note what is not.
 
