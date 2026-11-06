@@ -1,8 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Confluent.Kafka;
+using Confluent.Kafka.Admin;
 using EventPulse.Contracts;
+using EventPulse.Worker;
 using Npgsql;
 
 namespace EventPulse.IntegrationTests;
@@ -82,7 +85,78 @@ public sealed class DeadLetterTests(StackFixture stack) : IClassFixture<StackFix
             Assert.Single(await ReadDeadLetters(orderId)));
     }
 
+    [Fact]
+    public async Task Failed_dlq_publish_is_retried_without_recording_the_dead_letter_again()
+    {
+        var counters = stack.WorkerService<Counters>();
+        var duplicates = counters.Duplicates;
+        var writeRetries = counters.DeadLetterWriteRetries;
+        var orderId = NewOrderId();
+        var paid = Event(orderId, new PaymentCompleted($"pay_{orderId}", 24900));
+
+        await DeleteDeadLetterTopic();
+        try
+        {
+            await Produce(orderId, JsonSerializer.SerializeToUtf8Bytes(paid, EventJson.Options));
+            await Until(() => Task.FromResult(counters.DeadLetterWriteRetries > writeRetries), "a dead-letter publish retry");
+        }
+        finally
+        {
+            await CreateDeadLetterTopic();
+        }
+
+        await Until(async () => await ReadDeadLetters(orderId) is [{ Published: true }], "a published dead letter");
+
+        Assert.Equal(
+            new DeadLetterRow(paid.EventId, nameof(PaymentCompleted), "Conflict", "OrderNotFound", 1, true),
+            Assert.Single(await ReadDeadLetters(orderId)));
+        Assert.Single(ReadDeadLetterTopic(orderId));
+        Assert.Equal(duplicates, counters.Duplicates);
+    }
+
     private static string NewOrderId() => $"ord_{Guid.NewGuid():N}";
+
+    private static async Task Until(Func<Task<bool>> condition, string what)
+    {
+        var elapsed = Stopwatch.StartNew();
+        while (!await condition())
+        {
+            if (elapsed.Elapsed > Timeout)
+            {
+                throw new TimeoutException($"No {what} after {Timeout}");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+        }
+    }
+
+    private IAdminClient Admin() =>
+        new AdminClientBuilder(new AdminClientConfig { BootstrapServers = stack.Kafka.GetBootstrapAddress() }).Build();
+
+    private async Task DeleteDeadLetterTopic()
+    {
+        using var admin = Admin();
+        await admin.DeleteTopicsAsync([Topics.DeadLetters]);
+        await Until(
+            () => Task.FromResult(admin.GetMetadata(Topics.DeadLetters, TimeSpan.FromSeconds(5)).Topics
+                .Single().Error.Code == ErrorCode.UnknownTopicOrPart),
+            $"deletion of {Topics.DeadLetters}");
+    }
+
+    private async Task CreateDeadLetterTopic()
+    {
+        using var admin = Admin();
+        await admin.CreateTopicsAsync(
+        [
+            new TopicSpecification
+            {
+                Name = Topics.DeadLetters,
+                NumPartitions = 1,
+                ReplicationFactor = 1,
+                Configs = new() { ["retention.ms"] = "2592000000" },
+            },
+        ]);
+    }
 
     private static EventEnvelope Event<T>(string orderId, T payload) =>
         new(

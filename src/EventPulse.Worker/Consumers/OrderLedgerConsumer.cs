@@ -100,8 +100,9 @@ internal sealed class OrderLedgerConsumer(
     private bool Handle(ConsumeResult<string, byte[]> result, CancellationToken stoppingToken)
     {
         var since = Stopwatch.StartNew();
+        DeadLetter? recorded = null;
         var processed = retry.Run(
-            n => Process(result, n),
+            n => recorded = Process(result, n),
             retry.Attempts,
             retry.Backoff,
             since,
@@ -114,7 +115,7 @@ internal sealed class OrderLedgerConsumer(
 
         if (processed.Result == RetryResult.Done)
         {
-            return true;
+            return recorded is null || Deliver(result, recorded, since, stoppingToken);
         }
 
         if (processed.Result == RetryResult.Stopped)
@@ -140,7 +141,7 @@ internal sealed class OrderLedgerConsumer(
             result.Offset.Value);
         var detail = Describe(ex);
         var written = retry.Run(
-            _ => DeadLetter(result, "RetriesExhausted", detail, processed.Attempts),
+            _ => recorded = Record(result, "RetriesExhausted", detail, processed.Attempts),
             int.MaxValue,
             _ => retry.MaxDelay,
             since,
@@ -153,7 +154,7 @@ internal sealed class OrderLedgerConsumer(
 
         return written.Result switch
         {
-            RetryResult.Done => true,
+            RetryResult.Done => recorded is null || Deliver(result, recorded, since, stoppingToken),
             RetryResult.Stopped => false,
             _ => GiveUp(result, written),
         };
@@ -178,16 +179,14 @@ internal sealed class OrderLedgerConsumer(
         return root == head ? text : $"{text} ---> {root.GetType().FullName}: {root.Message}";
     }
 
-    private void Process(ConsumeResult<string, byte[]> result, int attempt)
+    private DeadLetter? Process(ConsumeResult<string, byte[]> result, int attempt)
     {
         if (!Incoming.TryRead(result.Message.Value, out var incoming, out var malformed))
         {
-            DeadLetter(result, "Malformed", malformed, attempt);
+            return Record(result, "Malformed", malformed, attempt);
         }
-        else if (Store(incoming, result) is { } conflict)
-        {
-            DeadLetter(result, "Conflict", conflict, attempt);
-        }
+
+        return Store(incoming, result) is { } conflict ? Record(result, "Conflict", conflict, attempt) : null;
     }
 
     // Committing here would lose the event, so the host stops and the message is redelivered on restart.
@@ -317,7 +316,7 @@ internal sealed class OrderLedgerConsumer(
         return null;
     }
 
-    private void DeadLetter(ConsumeResult<string, byte[]> result, string reason, string detail, int attempts)
+    private DeadLetter? Record(ConsumeResult<string, byte[]> result, string reason, string detail, int attempts)
     {
         var (raw, eventId, eventType, orderId) = Incoming.Peek(result.Message.Value);
         using var scope = scopes.CreateScope();
@@ -335,33 +334,64 @@ internal sealed class OrderLedgerConsumer(
             FailedAt = now,
         };
 
-        using (var tx = db.Database.BeginTransaction())
+        using var tx = db.Database.BeginTransaction();
+        // Without a readable eventId there is nothing to deduplicate on, so a redelivery is dead-lettered again.
+        if (eventId is { } id)
         {
-            // Without a readable eventId there is nothing to deduplicate on, so a redelivery is dead-lettered again.
-            if (eventId is { } id)
-            {
-                db.ProcessedEvents.Add(new ProcessedEvent { EventId = id, ConsumerGroup = _options.GroupId, ProcessedAt = now });
-            }
-
-            db.DeadLetters.Add(row);
-            try
-            {
-                db.SaveChanges();
-            }
-            catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-            {
-                tx.Rollback();
-                logger.LogInformation("Duplicate {EventId} for {OrderId}, skipped", eventId, row.OrderId);
-                counters.AddDuplicate();
-                return;
-            }
-
-            tx.Commit();
+            db.ProcessedEvents.Add(new ProcessedEvent { EventId = id, ConsumerGroup = _options.GroupId, ProcessedAt = now });
         }
 
-        Publish(result, row);
-        row.DlqPublishedAt = DateTimeOffset.UtcNow;
-        db.SaveChanges();
+        db.DeadLetters.Add(row);
+        try
+        {
+            db.SaveChanges();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            tx.Rollback();
+            logger.LogInformation("Duplicate {EventId} for {OrderId}, skipped", eventId, row.OrderId);
+            counters.AddDuplicate();
+            return null;
+        }
+
+        tx.Commit();
+        return row;
+    }
+
+    private bool Deliver(ConsumeResult<string, byte[]> result, DeadLetter row, Stopwatch since, CancellationToken stoppingToken)
+    {
+        // A failed timestamp update is retried on its own, so the DLQ gets the message once.
+        var published = false;
+        var delivered = retry.Run(
+            _ =>
+            {
+                if (!published)
+                {
+                    Publish(result, row);
+                    published = true;
+                }
+
+                MarkPublished(row);
+            },
+            int.MaxValue,
+            retry.Backoff,
+            since,
+            (n, error, delay) =>
+            {
+                counters.AddDeadLetterWriteRetry();
+                LogRetry(result, "Dead-letter publish", n, error, delay);
+            },
+            stoppingToken);
+
+        if (delivered.Result == RetryResult.Stopped)
+        {
+            return false;
+        }
+
+        if (delivered.Result != RetryResult.Done)
+        {
+            return GiveUp(result, delivered);
+        }
 
         logger.LogError(
             "Dead-lettered {EventType} {EventId} for {OrderId} at {Partition}:{Offset} as {Reason} {Detail}",
@@ -370,9 +400,18 @@ internal sealed class OrderLedgerConsumer(
             row.OrderId,
             result.Partition.Value,
             result.Offset.Value,
-            reason,
-            detail);
+            row.Reason,
+            row.Detail);
         counters.AddDeadLettered();
+        return true;
+    }
+
+    private void MarkPublished(DeadLetter row)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LedgerDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        db.DeadLetters.Where(d => d.Id == row.Id).ExecuteUpdate(s => s.SetProperty(d => d.DlqPublishedAt, now));
     }
 
     private void Publish(ConsumeResult<string, byte[]> result, DeadLetter row)
