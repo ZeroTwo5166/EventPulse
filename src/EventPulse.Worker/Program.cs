@@ -30,6 +30,7 @@ builder.Services.AddSingleton(sp =>
         Acks = kafka.Acks,
         EnableIdempotence = kafka.EnableIdempotence,
         MessageSendMaxRetries = kafka.MessageSendMaxRetries,
+        MessageTimeoutMs = (int)kafka.ProduceTimeout.TotalMilliseconds,
     };
     return new ProducerBuilder<string, byte[]>(config).Build();
 });

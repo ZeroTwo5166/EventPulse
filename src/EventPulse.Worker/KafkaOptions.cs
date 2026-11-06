@@ -15,5 +15,6 @@ public sealed class KafkaOptions
     public Acks Acks { get; init; }
     public bool EnableIdempotence { get; init; }
     public int MessageSendMaxRetries { get; init; }
+    public TimeSpan ProduceTimeout { get; init; }
     public TimeSpan HealthTimeout { get; init; }
 }
