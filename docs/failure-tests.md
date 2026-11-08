@@ -11,7 +11,7 @@ Tests 3, 8 and 9 in the design.md plan were not written; see the last section.
 ## Running the scripts
 
 1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD`.
-2. Start the stack with `docker compose up -d --build` and wait until the api and worker containers are running.
+2. Start the stack with `docker compose up -d --build` and wait until the kafka, postgres, redis, api and worker containers show `healthy` in `docker compose ps`.
 3. Run a script from bash (Git Bash on Windows) with `docker compose` and `curl` on the path. The scripts work from any directory; they change to the repository root themselves.
 
 Every run seeds 500 orders (1,000 events) under a fresh prefix, `chaos-<name>-<unix time>`, so runs do not interfere with each other and the database does not need resetting between them. `seed.sh` sends each block of 50 events under its own API key, so the seed itself never reaches the rate limit.
@@ -64,7 +64,7 @@ Pass/fail: PASS if all of these hold:
 
 What happened: PASS. The replay got 202 for all 1,000 requests, `processed_events` stayed at 1,000 rows for the prefix, and each group logged 1,000 "Duplicate ... skipped" lines during the replay. `verify.sh` printed OK, and both groups were at lag 0 within 2 s of the replay finishing.
 
-## pause-postgres, 10 s (test 4)
+## pause-postgres, 10 s (test 4a)
 
 Command:
 
@@ -80,7 +80,7 @@ Pass/fail: PASS if `verify.sh` prints OK and `dead_letters` has no rows for the 
 
 What happened: PASS. The pause lasted 11 s, and both groups retried the same `OrderPlaced` 3 times in place, with 0 dead-letter write retries and 0 dead letters. `verify.sh` printed OK, and both groups were at lag 0 18 s after the unpause.
 
-## pause-postgres, 60 s (test 4)
+## pause-postgres, 60 s (test 4b, report only)
 
 Command:
 
