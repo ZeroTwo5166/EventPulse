@@ -130,6 +130,11 @@ Worker throughput includes Worker startup (about 1.8 s) and one poll interval (a
 - Logs use the default console formatter, not JSON.
 - If the dead-letter publish fails past the 4-minute deadline, a message with a readable `eventId` is skipped as a duplicate on restart and its dead letter is never published.
 - The chaos scripts count only "Dead-letter write" log lines, so `poison.sh` does not detect dead-letter publish retries.
+- An uncaught `KafkaException` from `Consume` or `Commit` stops the Worker; compose restarts it and the uncommitted message is redelivered.
+- Offsets are committed synchronously, one message at a time; the effect on throughput has not been measured.
+- `PaymentCompleted` amount and `paymentId` are not checked, and the cancel reason is not stored.
+- `processed_events` is keyed on `event_id` alone, so it deduplicates for one consumer group only.
+- Migrations run at Worker startup without a lock, so two Workers starting against a fresh database can race.
 
 See [docs/design.md#known-limits](docs/design.md#known-limits) for details.
 

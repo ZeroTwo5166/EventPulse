@@ -102,7 +102,7 @@ Client configuration that matters, in `appsettings.json`, not scattered in code:
 - Consumer: `EnableAutoCommit=false`, `AutoOffsetReset=Earliest`, `MaxPollIntervalMs=300000`. Offsets are committed by the handler, never by a timer (see Reliability).
 - One `IConsumer` per `BackgroundService`, one `BackgroundService` per group. With 6 partitions you can run up to 6 Worker instances per group; the crash tests were planned to run 2 (`rebalance.sh`, not written), and the tests that exist run 1.
 
-Run the Worker twice locally (`docker compose up --scale worker=2`) to watch a rebalance in the logs.
+Run the Worker twice locally (`docker compose up --scale worker=2`) to watch a rebalance in the logs. Start it once first so the migrations are applied; two Workers starting against a fresh database can race (see Known limits).
 
 ## PostgreSQL schema
 
@@ -260,6 +260,11 @@ The API publishes to Kafka and returns 202. If the produce call succeeds but the
 - Logs use the default console formatter, not the JSON console output described under Observability.
 - If the dead-letter publish is still failing when the 4-minute deadline passes, the Worker stops without committing. On restart a message with a readable `eventId` is skipped as a duplicate, so its dead letter stays in `dead_letters` with `dlq_published_at` null and is never published.
 - The chaos scripts count only "Dead-letter write" log lines, so `poison.sh` does not detect dead-letter publish retries, which are logged as "Dead-letter publish".
+- A `KafkaException` thrown by `Consume` or `Commit` is not caught, so the consumer's background service faults and the host stops (the .NET 8 default). Compose restarts the Worker, which resumes from the last committed offset, so the message whose offset was not committed is redelivered.
+- Each offset is committed synchronously, one message at a time. How much this limits throughput has not been measured.
+- `PaymentCompleted` is applied without checking its `amountMinor` or `paymentId` against the order, and the `reason` of an `OrderCancelled` is not stored.
+- `processed_events` is keyed on `event_id` alone, so it can deduplicate for one consumer group only; the `consumer_group` column is informational. Only `order-ledger` writes to it; `order-notifications` deduplicates on the unique `event_id` in `notifications`.
+- The Worker applies EF Core migrations at startup, and EF Core 8 takes no lock while doing so, so two Workers starting against a fresh database can race.
 
 ## Failure-injection test plan
 
@@ -276,7 +281,7 @@ The seed is a `scripts/seed.sh` that POSTs 1,000 events for 500 orders with a kn
 | 5 | `stop-postgres-long.sh` | `docker stop postgres` for 60 s mid-seed, then `docker start`; a second 20-order seed after the restart | Postgres ready within 60 s; lag 0 on both groups; ≥ 1 `RetriesExhausted` row; every other row is `Conflict` / `OrderNotFound` for an order whose `OrderPlaced` was `RetriesExhausted`; every wrong order has a dead letter and the `processed_events` and notifications checks pass; no `Deadline passed`; the second seed verifies OK with no dead letters |
 | 6 | `stop-redis.sh` | `docker stop redis` for 30 s mid-seed, then `docker start`; then bursts of 250 requests under one key until one gets a 429 | Redis answers PING within 60 s; every seed request gets 202; API logs ≥ 1 `ratelimit bypassed`; lag 0 on both groups; OK; no dead letters; a burst starting within 60 s of PONG gets a 429 |
 | 7 | `poison.sh` | Publish 5 malformed messages directly with `kafka-console-producer` | 5 rows in `dead_letters` with `Malformed`; seed still completes OK |
-| 8 | `rebalance.sh` (planned, not written) | `--scale worker=2`, kill one mid-seed | OK; survivor's log shows partitions assigned |
+| 8 | `rebalance.sh` (planned, not written) | `--scale worker=2` once the database is migrated, kill one mid-seed | OK; survivor's log shows partitions assigned |
 | 9 | `sigterm.sh` (planned, not written) | `docker stop worker` (SIGTERM, 15 s grace) mid-seed, restart | OK; zero `duplicate` lines (clean shutdown committed everything) |
 
 Scripts 3, 8 and 9 were planned but not written. Their rows describe the intended tests.

@@ -112,3 +112,49 @@ max.poll.interval.ms. Past the deadline the Worker stops without committing.
 On restart a message with a readable eventId is skipped as a duplicate, so its
 dead letter stays in the table with dlq_published_at null and is never
 published.
+
+## 2026-11-08 One synchronous commit per message
+
+Each consumer commits a message's offset with a synchronous Commit right after
+its transaction, before it consumes the next message. With one message at a
+time, this means the only message a crash can cause to be redelivered is the
+one in flight. Storing offsets and committing in the background or every N
+messages would also be safe, since both consumers deduplicate on eventId, but a
+crash would then redeliver every message since the last commit, each skipped as
+a duplicate. The cost is one broker round trip per message; how much of the
+measured 243.6 events/s it accounts for has not been measured.
+
+## 2026-11-08 Migrations at Worker startup
+
+The Worker applies EF Core migrations with Database.MigrateAsync before its
+consumers start, so docker compose up on a clean machine creates the schema
+with no separate step. EF Core 8 takes no lock while migrating, so two Workers
+starting against a fresh database can race. Compose runs one Worker, so this
+does not come up there; with --scale worker=2, start one Worker first. A
+one-shot migration service in compose, like kafka-init, would remove the race
+at the cost of another container to build and run.
+
+## 2026-11-08 Default librdkafka partitioner
+
+The API's producer leaves the partitioner at librdkafka's default,
+consistent_random, which hashes the message key with CRC32. The Java client,
+which kafka-console-producer uses, hashes with murmur2, so a producer built on
+it would map the same orderId to a different partition and events for one
+order would no longer be read in order. Other librdkafka-based clients share
+this client's default. Only the API produces business events, so the default
+is kept. Changing the partitioner now, for example to murmur2_random, would
+move orders already in flight to new partitions: a later event could be read
+before an earlier one still on the old partition and be dead-lettered as
+OrderNotFound.
+
+## 2026-11-08 Stop after the retry deadline instead of skipping
+
+When the 4-minute deadline from consume passes while a message is still being
+retried, or while its dead letter is still being written or published, the
+Worker logs at Error and stops the host without committing the offset. Compose
+restarts the Worker (restart: unless-stopped) and the message is redelivered.
+Skipping it would commit the offset of an event that was neither applied nor
+dead-lettered, and the event would be lost without a trace. The deadline keeps
+one message under max.poll.interval.ms of 5 minutes, so the consumer is never
+evicted from the group mid-retry. order-notifications has no dead-letter path
+and follows the same rule: it never skips a message.
