@@ -102,7 +102,7 @@ Client configuration that matters, in `appsettings.json`, not scattered in code:
 
 - Producer: `Acks=All`, `EnableIdempotence=true`, `MessageSendMaxRetries=3`. The API awaits the delivery report before returning 202; a failed produce returns 503.
 - Consumer: `EnableAutoCommit=false`, `AutoOffsetReset=Earliest`, `MaxPollIntervalMs=300000`. Offsets are committed by the handler, never by a timer (see Reliability).
-- One `IConsumer` per `BackgroundService`, one `BackgroundService` per group. With 6 partitions you can run up to 6 Worker instances per group; the crash tests run 2.
+- One `IConsumer` per `BackgroundService`, one `BackgroundService` per group. With 6 partitions you can run up to 6 Worker instances per group; the crash tests were planned to run 2 (`rebalance.sh`, not written), and the tests that exist run 1.
 
 Run the Worker twice locally (`docker compose up --scale worker=2`) to watch a rebalance in the logs. That is the cheapest demonstration of consumer groups there is.
 
@@ -175,7 +175,7 @@ A retry topic breaks per-order ordering: a retried `OrderPlaced` can land after 
 
 **Graceful shutdown**
 
-`StoppingToken` is checked between messages, never mid-transaction. On cancellation: finish the current message, commit its offset, `Close()` the consumer so the group rebalances immediately rather than after `session.timeout.ms`. Test: send SIGTERM mid-batch, confirm zero duplicates and zero gaps.
+`StoppingToken` is checked between messages, never mid-transaction. On cancellation: finish the current message, commit its offset, `Close()` the consumer so the group rebalances immediately rather than after `session.timeout.ms`. Planned test, not implemented: send SIGTERM mid-batch, confirm zero duplicates and zero gaps (`sigterm.sh`, test 9, was not written; see Known limits).
 
 **Concurrency**
 
@@ -240,9 +240,22 @@ Write this table into the README on day one as hypotheses. Each row gets a "Veri
 
 Any dead-lettered `OrderPlaced` with a readable `orderId` has the same `OrderNotFound` knock-on, whatever the reason it was dead-lettered. Replaying the original messages requires deleting their `processed_events` rows first; otherwise they are skipped as `Duplicate`.
 
-**Known window the design does not close**
+## Known limits
+
+### Known window the design does not close
 
 The API publishes to Kafka and returns 202. If the produce call succeeds but the API crashes before responding, the client may retry with the same `eventId`, which is harmless, or with a new one, which creates a duplicate business event the system cannot detect. Closing this requires the client to supply `eventId` (recommended in the API docs) or an outbox on the client side. State this plainly; pretending it does not exist is worse than having it.
+
+### Other limits
+
+- The API serves `/health` but has no `/metrics` endpoint. The `ratelimit_bypassed` counter exists in the API's `Counters` class, but no endpoint exposes it.
+- `docker-compose.yml` does not publish the Worker's port 8081 to the host. The Worker's `/health` and `/metrics` are reached with `docker compose exec` into the worker container, as `scripts/measure.sh` does.
+- The measurements were taken on a single local machine with all services running in Docker. No hardware details were recorded.
+- The chaos scripts `restart-kafka.sh`, `rebalance.sh` and `sigterm.sh` (tests 3, 8 and 9 in the failure-injection plan) were not written, so the "Kafka broker restarted" and "2 Worker instances, one killed" rows in the guarantees table are untested. Graceful shutdown is covered only by the `ShutdownTests` integration test, which stops the Worker host in-process rather than sending SIGTERM to a container.
+- Compose runs one Worker instance and every test and measurement used one. Running several instances per consumer group, which the 6 partitions allow, has not been tested.
+- Kafka is a single broker and every topic, including the internal consumer offsets topic, has replication factor 1. If the broker's data is lost, the event log and the committed offsets are lost with it, and while the broker is unreachable `POST /events` returns 503.
+- The API checks that the envelope fields are present and that `payload` is not null, but it does not validate the payload's fields. An event with a bad payload, such as an `OrderPlaced` without a currency, is accepted with 202 and then dead-lettered by the Worker as `Malformed` / `InvalidPayload`.
+- Logs use the default console formatter, not the JSON console output described under Observability.
 
 ## Failure-injection test plan
 
@@ -254,13 +267,15 @@ The seed is a `scripts/seed.sh` that POSTs 1,000 events for 500 orders with a kn
 | --- | --- | --- | --- |
 | 1 | `kill-worker.sh` | Per cycle, a fresh seed; `docker kill worker` 2–13 s into it, `docker start` 5 s later | `verify.sh` prints OK in every cycle; `Duplicate` and open-transaction EOF lines are printed as evidence, not required |
 | 2 | `duplicate-events.sh` | Seed, then replay the same 1,000 POSTs | OK; `processed_events` has 1,000 rows, not 2,000 |
-| 3 | `restart-kafka.sh` | `docker restart kafka` mid-seed | OK; Worker logs show reconnect and resume |
+| 3 | `restart-kafka.sh` (planned, not written) | `docker restart kafka` mid-seed | OK; Worker logs show reconnect and resume |
 | 4 | `pause-postgres.sh` | `docker pause postgres` for 10 s mid-seed | OK; logs show retries, zero dead letters |
 | 5 | `stop-postgres-long.sh` | `docker stop postgres` for 60 s mid-seed, then `docker start`; a second 20-order seed after the restart | Postgres ready within 60 s; lag 0 on both groups; ≥ 1 `RetriesExhausted` row; every other row is `Conflict` / `OrderNotFound` for an order whose `OrderPlaced` was `RetriesExhausted`; every wrong order has a dead letter and the `processed_events` and notifications checks pass; no `Deadline passed`; the second seed verifies OK with no dead letters |
 | 6 | `stop-redis.sh` | `docker stop redis` for 30 s mid-seed, then `docker start`; then bursts of 250 requests under one key until one gets a 429 | Redis answers PING within 60 s; every seed request gets 202; API logs ≥ 1 `ratelimit bypassed`; lag 0 on both groups; OK; no dead letters; a burst starting within 60 s of PONG gets a 429 |
 | 7 | `poison.sh` | Publish 5 malformed messages directly with `kafka-console-producer` | 5 rows in `dead_letters` with `Malformed`; seed still completes OK |
-| 8 | `rebalance.sh` | `--scale worker=2`, kill one mid-seed | OK; survivor's log shows partitions assigned |
-| 9 | `sigterm.sh` | `docker stop worker` (SIGTERM, 10 s grace) mid-seed, restart | OK; zero `duplicate` lines (clean shutdown committed everything) |
+| 8 | `rebalance.sh` (planned, not written) | `--scale worker=2`, kill one mid-seed | OK; survivor's log shows partitions assigned |
+| 9 | `sigterm.sh` (planned, not written) | `docker stop worker` (SIGTERM, 10 s grace) mid-seed, restart | OK; zero `duplicate` lines (clean shutdown committed everything) |
+
+Scripts 3, 8 and 9 were planned but not written. Their rows describe the intended tests.
 
 Integration tests in `tests/EventPulse.IntegrationTests` use Testcontainers for Kafka, Postgres and Redis and cover the same cases 1, 2, 4 and 7 in-process, so CI exercises them on every push. The chaos scripts are the human-readable version of the same evidence.
 
@@ -354,7 +369,7 @@ Each item is one or more commits. Tick it only when its test passes and the comm
 
 **Milestone 4 — Evidence (Nov 2–5)**
 
-- [ ] Chaos scripts 3, 5, 8, 9 run and documented.
+- [ ] Chaos scripts 3, 5, 8, 9 run and documented. Script 5 was written and run; 3, 8 and 9 were not written.
 - [ ] `/health` and `/metrics` endpoints. Compose health checks on both services.
 - [x] Run the seed at 10,000 events, record events/second and end-to-end latency from the seed's send time to `processed_events.processed_at`. Three runs, report the median. These are the only numbers that go on the CV.
   How to measure: `scripts/measure.sh [--live] 5000 <label>` seeds 10,000 events with `SEND_LOG` set, polls `/metrics` until `processed` has grown by 10,000, then joins the send log to `processed_events` and prints one summary block. Run it without `--live` for Worker throughput: the Worker is stopped during the seed and started after it, so its latency includes the wait in Kafka. Run it with `--live` for end-to-end latency: the Worker runs throughout. `processed_at` is taken before the transaction commits, so latencies read a few ms low, and the seed starts a curl process per request, so system throughput is bounded by the seed rather than the pipeline.
@@ -393,7 +408,7 @@ Each item is one or more commits. Tick it only when its test passes and the comm
 EventPulse is done when all of these are true. Nothing else counts.
 
 1. `git clone` + `docker compose up` + `scripts/seed.sh` + `scripts/verify.sh` prints `OK` on a clean machine.
-2. Chaos scripts 1, 2, 4, 6 and 7 pass and are documented with real output. (3, 5, 8, 9 are strongly wanted but not blocking.)
+2. Chaos scripts 1, 2, 4, 6 and 7 pass and are documented with real output. (3, 5, 8, 9 are strongly wanted but not blocking. 5 was run; 3, 8 and 9 were not written.)
 3. The README's guarantees table has a verified date on every row that has a passing script, and says "untested" on the rest.
 4. CI is green and runs the integration tests against real containers.
 5. You can explain, without notes, why the offset is committed after the transaction, what happens on a duplicate, and why Redis fails open.
