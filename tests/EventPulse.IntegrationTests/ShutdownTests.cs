@@ -16,7 +16,7 @@ public sealed class ShutdownTests(StackFixture stack, ITestOutputHelper output) 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(20);
 
     [Fact]
-    public async Task Stop_mid_batch_finishes_and_commits_so_a_fresh_worker_neither_misses_nor_repeats()
+    public async Task Stop_while_processing_finishes_and_commits_so_a_fresh_worker_neither_misses_nor_repeats()
     {
         var orderIds = Enumerable.Range(1, 25).Select(_ => $"ord_{Guid.NewGuid():N}").ToArray();
         var placed = orderIds.Select(id => Event(id, new OrderPlaced("cus_77", 24900, "DKK"))).ToArray();

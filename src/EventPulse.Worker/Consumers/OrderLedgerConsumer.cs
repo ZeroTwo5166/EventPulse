@@ -51,28 +51,24 @@ internal sealed class OrderLedgerConsumer(
 
         consumer.Subscribe(Topics.Events);
 
-        var inFlight = 0;
+        var inFlight = false;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
                 var result = consumer.Consume(stoppingToken);
-                inFlight = 1;
+                inFlight = true;
                 if (!Handle(result, stoppingToken))
                 {
                     break;
                 }
 
                 consumer.Commit(result);
-                if (!stoppingToken.IsCancellationRequested)
-                {
-                    inFlight = 0;
-                }
+                inFlight = false;
             }
         }
         catch (OperationCanceledException)
         {
-            // Shutdown requested; fall through to Close.
         }
         finally
         {
@@ -81,7 +77,7 @@ internal sealed class OrderLedgerConsumer(
     }
 
     // Without Close the group waits out session.timeout.ms before it gives these partitions to another member.
-    private void Close(IConsumer<string, byte[]> consumer, int inFlight)
+    private void Close(IConsumer<string, byte[]> consumer, bool inFlight)
     {
         try
         {
@@ -89,11 +85,11 @@ internal sealed class OrderLedgerConsumer(
         }
         catch (KafkaException ex)
         {
-            logger.LogWarning(ex, "Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.GroupId, inFlight, false);
+            logger.LogWarning(ex, "Shutdown of {Group}, in flight {InFlight}, Close completed {Closed}", _options.GroupId, inFlight, false);
             return;
         }
 
-        logger.LogInformation("Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.GroupId, inFlight, true);
+        logger.LogInformation("Shutdown of {Group}, in flight {InFlight}, Close completed {Closed}", _options.GroupId, inFlight, true);
     }
 
     // False means the offset must stay uncommitted and the loop must stop: shutdown, or the host is being stopped.

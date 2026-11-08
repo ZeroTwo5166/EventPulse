@@ -46,23 +46,20 @@ internal sealed class OrderNotificationsConsumer(
 
         consumer.Subscribe(Topics.Events);
 
-        var inFlight = 0;
+        var inFlight = false;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
                 var result = consumer.Consume(stoppingToken);
-                inFlight = 1;
+                inFlight = true;
                 if (!Handle(result, stoppingToken))
                 {
                     break;
                 }
 
                 consumer.Commit(result);
-                if (!stoppingToken.IsCancellationRequested)
-                {
-                    inFlight = 0;
-                }
+                inFlight = false;
             }
         }
         catch (OperationCanceledException)
@@ -74,7 +71,7 @@ internal sealed class OrderNotificationsConsumer(
         }
     }
 
-    private void Close(IConsumer<string, byte[]> consumer, int inFlight)
+    private void Close(IConsumer<string, byte[]> consumer, bool inFlight)
     {
         try
         {
@@ -82,11 +79,11 @@ internal sealed class OrderNotificationsConsumer(
         }
         catch (KafkaException ex)
         {
-            logger.LogWarning(ex, "Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.NotificationsGroupId, inFlight, false);
+            logger.LogWarning(ex, "Shutdown of {Group}, in flight {InFlight}, Close completed {Closed}", _options.NotificationsGroupId, inFlight, false);
             return;
         }
 
-        logger.LogInformation("Shutdown of {Group} with {InFlight} in flight, Close completed {Closed}", _options.NotificationsGroupId, inFlight, true);
+        logger.LogInformation("Shutdown of {Group}, in flight {InFlight}, Close completed {Closed}", _options.NotificationsGroupId, inFlight, true);
     }
 
     // There is no dead-letter path here, so past the schedule it keeps retrying at the cap until the deadline.

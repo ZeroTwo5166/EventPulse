@@ -7,6 +7,7 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisLevel>latest</AnalysisLevel>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Needed for IDE0005 (unused usings) to run at build; CS1591 is off because XML docs are not required. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>

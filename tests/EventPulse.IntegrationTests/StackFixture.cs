@@ -269,6 +269,8 @@ public sealed class StackFixture : IAsyncLifetime
 
     // Program.cs builds and runs its host in one statement; this is the hook WebApplicationFactory uses to get hold of it.
     // Other hosts can be built at the same time, and only ours has this connection string.
+    // Not WebApplicationFactory itself: the Worker was a generic host when this was written, and its Program is not
+    // visible here and would clash with the API's Program, which the tests use.
     private sealed class HostCapture(string ledger) : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>
     {
         private readonly TaskCompletionSource<IHost> _host = new(TaskCreationOptions.RunContinuationsAsynchronously);

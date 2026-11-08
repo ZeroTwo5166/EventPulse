@@ -7,11 +7,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 
-
-
 var builder = WebApplication.CreateBuilder(args);
 
-// Stopping both consumers at once keeps the shutdown budget at one message plus Close(), not two of each.
+// Host:ServicesStopConcurrently stops both consumers at once, so the shutdown budget is one message plus Close(), not two of each.
 builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host"));
 builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection(KafkaOptions.Section));
 builder.Services.Configure<RetryOptions>(builder.Configuration.GetSection(RetryOptions.Section));

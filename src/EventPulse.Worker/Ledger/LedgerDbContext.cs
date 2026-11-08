@@ -28,7 +28,7 @@ internal sealed class LedgerDbContext(DbContextOptions<LedgerDbContext> options)
         {
             e.ToTable("processed_events");
             e.HasKey(p => p.EventId);
-            // The key must always be the incoming eventId; a client-generated Guid would defeat deduplication.
+            // The key must always be the incoming eventId; an EF-generated Guid would defeat deduplication.
             e.Property(p => p.EventId).HasColumnName("event_id").ValueGeneratedNever();
             e.Property(p => p.ConsumerGroup).HasColumnName("consumer_group");
             e.Property(p => p.ProcessedAt).HasColumnName("processed_at").HasColumnType("timestamptz");
