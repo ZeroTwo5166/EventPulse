@@ -56,7 +56,9 @@ same transaction. A redelivery fails the primary key, the transaction rolls
 back and the offset is committed. The alternative, ON CONFLICT DO NOTHING, is
 quieter but hides the fact that a redelivery happened; the explicit violation is
 logged and counted. EF's own error logging for the two failure events is lowered
-to Information so a duplicate does not look like an outage.
+to Information so a duplicate does not look like an outage. EF then no longer
+reports failed commands or saves at Error, so the consumer logs exhausted
+retries, dead letters and passed deadlines at Error itself.
 
 ## 2026-11-02 Retry in place, not a retry topic
 
@@ -72,14 +74,14 @@ A retry topic is the right choice when the opposite holds.
 ## 2026-11-02 Rate limit fails open
 
 If Redis is disconnected, the Lua script takes longer than 200 ms, or the call
-throws, the API logs a warning, increments ratelimit_bypassed and accepts the
-request without counting it. The rate limit protects Kafka from a noisy client;
-it is not a security boundary, and refusing all traffic because a cache is down
-is the worse failure. Fail closed would be right if the limit enforced a paid
-quota or guarded an expensive backend, where over-admitting costs more than an
-outage. The multiplexer is created with AbortOnConnectFail false so the API
-starts while Redis is down and reconnects in the background. Verified 2026-11-01
-with stop-redis.sh.
+fails with a RedisException, the API logs a warning, increments
+ratelimit_bypassed and accepts the request without counting it. The rate limit
+protects Kafka from a noisy client; it is not a security boundary, and refusing
+all traffic because a cache is down is the worse failure. Fail closed would be
+right if the limit enforced a paid quota or guarded an expensive backend, where
+over-admitting costs more than an outage. The multiplexer is created with
+AbortOnConnectFail false so the API starts while Redis is down and reconnects
+in the background. Verified 2026-11-01 with tests/chaos/stop-redis.sh.
 
 ## 2026-11-02 Fixed window, not sliding
 
@@ -92,11 +94,21 @@ weighted sum, and the burst does not matter for a limit whose purpose is to keep
 one client from flooding Kafka. The script is atomic so a dropped connection
 between INCR and EXPIRE cannot leave a key that never expires.
 
+## 2026-11-06 Dead-letter publish retried on its own
 
-## Notes for the README
-
-- Copy .env.example to .env before docker compose up.
-- Running the Worker with dotnet run needs PGPASSWORD set in the shell; the local connection string has no password.
-- EF's CommandError and SaveChangesFailed events are lowered to Information, so the consumer's own failure handling must log at Error; EF will not.
-- seed.sh sends 1,000 requests in about 20 s; once the rate limit exists (100 per 10 s per key), seed and chaos scripts need a separate key per batch or a configurable limit.
-- verify.sh checks once and does not wait for the worker; chaos scripts must wait for consumer lag to reach 0 before calling it.
+A dead letter is written in two steps: the dead_letters row and its
+processed_events row are committed together, then the message is published to
+orders.events.dlq and dlq_published_at is set. These used to run as one retried
+step, so a failed publish repeated the insert, the insert hit the
+processed_events key as a duplicate, and the offset was committed without the
+message ever reaching the DLQ. A message with no readable eventId got a second
+dead_letters row instead. Now only the publish and the timestamp update are
+retried, with the same backoff capped at 8 s and the same 4-minute deadline
+from consume, and a publish that succeeded is not repeated when only the update
+failed. Each retry counts in dead_letter_write_retries. The Worker's producer
+has a 10-second message timeout (Kafka:ProduceTimeout); without it librdkafka
+waits up to its 5-minute default, past both the deadline and
+max.poll.interval.ms. Past the deadline the Worker stops without committing.
+On restart a message with a readable eventId is skipped as a duplicate, so its
+dead letter stays in the table with dlq_published_at null and is never
+published.

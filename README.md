@@ -40,7 +40,7 @@ cp .env.example .env        # then set POSTGRES_PASSWORD in .env
 docker compose up -d --build
 ```
 
-The API listens on `http://localhost:8080`. Kafka is on `localhost:29092`, PostgreSQL on `localhost:5432` and Redis on `localhost:6379`. The Worker applies its EF Core migrations on startup.
+The API listens on `http://localhost:8080`. Kafka is on `localhost:29092`, PostgreSQL on `localhost:5432` and Redis on `localhost:6379`. The Worker applies its EF Core migrations on startup. Running the Worker with `dotnet run` outside Docker needs `PGPASSWORD` set in the shell, because the connection string in its `appsettings.json` has no password.
 
 Send seed events and verify the ledger:
 
@@ -128,6 +128,8 @@ Worker throughput includes Worker startup (about 1.8 s) and one poll interval (a
 - Kafka is a single broker with replication factor 1 on every topic, so losing its data loses the event log and committed offsets.
 - The API does not validate payload fields; an event with a bad payload gets 202 and is then dead-lettered as `Malformed` / `InvalidPayload`.
 - Logs use the default console formatter, not JSON.
+- If the dead-letter publish fails past the 4-minute deadline, a message with a readable `eventId` is skipped as a duplicate on restart and its dead letter is never published.
+- The chaos scripts count only "Dead-letter write" log lines, so `poison.sh` does not detect dead-letter publish retries.
 
 See [docs/design.md#known-limits](docs/design.md#known-limits) for details.
 

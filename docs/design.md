@@ -189,6 +189,8 @@ An exception in the handler that is not classified (bug in your own code) counts
 
 `dead_letters` lives in Postgres, so the outage that exhausted the retries usually also fails the `RetriesExhausted` write. The write is retried in place every 8 s, bounded by a deadline of 4 minutes counted from when the message was consumed. Past the deadline the Worker logs at Error and stops the host without committing the offset; the message is redelivered on restart, and compose restarts the Worker (`restart: unless-stopped`). Each failed write counts in `dead_letter_write_retries`. The 4-minute bound keeps one message under Kafka's default `max.poll.interval.ms` of 5 minutes, so the consumer is never evicted from the group mid-retry.
 
+Once a dead letter's row is committed, whatever its reason, the message is published to `orders.events.dlq` and `dlq_published_at` is set. If either step fails, only those two are retried, never the insert, with the same backoff (0.5 s doubling to the 8 s cap) under the same 4-minute deadline; a publish that succeeded is not repeated when only the timestamp update failed. Each publish attempt is bounded by the Worker producer's 10 s produce timeout (`Kafka:ProduceTimeout`), and each retry counts in `dead_letter_write_retries`. Past the deadline the Worker stops without committing, as above; Known limits describes what then happens to that dead letter.
+
 **Retries in `order-notifications`**
 
 The notifications consumer uses the same retry schedule through the same shared code, but it has no DLQ. After the schedule it keeps retrying at the 8 s cap under the same 4-minute deadline, then logs at Error and stops the host without committing. It never skips the message.
@@ -256,6 +258,8 @@ The API publishes to Kafka and returns 202. If the produce call succeeds but the
 - Kafka is a single broker and every topic, including the internal consumer offsets topic, has replication factor 1. If the broker's data is lost, the event log and the committed offsets are lost with it, and while the broker is unreachable `POST /events` returns 503.
 - The API checks that the envelope fields are present and that `payload` is not null, but it does not validate the payload's fields. An event with a bad payload, such as an `OrderPlaced` without a currency, is accepted with 202 and then dead-lettered by the Worker as `Malformed` / `InvalidPayload`.
 - Logs use the default console formatter, not the JSON console output described under Observability.
+- If the dead-letter publish is still failing when the 4-minute deadline passes, the Worker stops without committing. On restart a message with a readable `eventId` is skipped as a duplicate, so its dead letter stays in `dead_letters` with `dlq_published_at` null and is never published.
+- The chaos scripts count only "Dead-letter write" log lines, so `poison.sh` does not detect dead-letter publish retries, which are logged as "Dead-letter publish".
 
 ## Failure-injection test plan
 

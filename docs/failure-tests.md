@@ -4,6 +4,10 @@ Date run: 2026-11-01
 
 Each test is a bash script in `tests/chaos/`. A script seeds its own orders, injects one failure, waits for both consumer groups to reach lag 0 and then checks the result. It prints `PASS` and exits 0, or prints `FAIL` and exits 1. A bad argument exits 2.
 
+These runs predate two Worker changes from 2026-11-06 and have not been repeated since: a failed DLQ publish is now retried on its own without repeating the dead-letter insert (84c2649), and the Worker's producer has a 10 s produce timeout (8bbc8fd). See the 2026-11-06 entry in `docs/decisions.md`. The scripts count only "Dead-letter write" retry lines; DLQ publish retries are logged as "Dead-letter publish" and are not counted or checked.
+
+Tests 3, 8 and 9 in the design.md plan were not written; see the last section.
+
 ## Running the scripts
 
 1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD`.
@@ -174,3 +178,11 @@ Pass/fail: PASS if all six conditions hold:
 For condition 4, the partition and offset of each poison message come from the worker log. The console producer and the API's producer hash keys differently, so a poison message cannot be put on a chosen order's partition.
 
 What happened: PASS, all six conditions. Each of the 5 messages got one `dead_letters` row as `Malformed` with its expected detail (`InvalidEnvelope`, `MissingEventId`, `UnknownEventType`, `MissingOrderId`, `InvalidPayload`), 1 attempt and DLQ published, with 0 retry lines and 0 notifications for them; `order-notifications` skipped each one at its partition and offset, and `order-ledger` applied later seed events on all five partitions they landed on (0, 1, 2, 4, 5). `verify.sh` printed OK for the seed with 0 dead letters, and both groups were at lag 0 26 s after the poison was published.
+
+## Not written: restart-kafka, rebalance, sigterm (tests 3, 8, 9)
+
+The failure-injection plan in `docs/design.md` lists three more scripts. None of them was written, so these cases are untested and have no results.
+
+- `tests/chaos/restart-kafka.sh` (test 3): planned to restart Kafka mid-seed and check that the Worker reconnects and resumes from its committed offsets.
+- `tests/chaos/rebalance.sh` (test 8): planned to run two Worker instances, kill one mid-seed and check that the survivor takes over its partitions.
+- `tests/chaos/sigterm.sh` (test 9): planned to stop the Worker with SIGTERM mid-seed and check for zero duplicates after restart. Graceful shutdown is covered only by the `ShutdownTests` integration test, which stops the Worker host in-process.
